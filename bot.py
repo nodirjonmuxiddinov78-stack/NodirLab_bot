@@ -10,11 +10,18 @@ from telegram.ext import (
 )
 
 TOKEN = "8925112663:AAECTaUL7PXfG1WtbegB4-GgX4BBbK3glI0"
-ADMIN_ID =  8294462170  # <--- O'ZINGIZNING TELEGRAM ID RAQAMINGIZNI YOZING
+ADMIN_ID = 8294462170  # <--- O'ZINGIZNING TELEGRAM ID RAQAMINGIZ
+SECRET_ADMIN_COMMAND = "secret admin"  # <--- ADMIN BUYRUG'I (Masalan: /secret_control)
+ADMIN_PASSWORD = "20122607Nodirjon"  # <--- ADMIN PANEL PAROLI
 
 USERS_FILE = "users.json"
 LANGS_FILE = "user_langs.json"
+BLOCKED_FILE = "blocked_users.json"
+
+AUTH_STATE = 0
 BROADCAST_STATE = 1
+BAN_STATE = 2
+UNBAN_STATE = 3
 
 os.makedirs("downloads", exist_ok=True)
 
@@ -41,6 +48,7 @@ def save_data(file_path, data):
 
 users_list = set(load_data(USERS_FILE, []))
 user_langs = load_data(LANGS_FILE, {})
+blocked_users = set(load_data(BLOCKED_FILE, []))
 
 TEXTS = {
     'uz': {
@@ -53,9 +61,7 @@ TEXTS = {
         'lang_changed': "🇺🇿 Til o'zgartirildi!",
         'btn_top': "🔥 Top-10 Musiqa",
         'btn_lang': "🌐 Tilni o'zgartirish",
-        'admin_stats': "📊 **Bot statistikasi:**\n\nJami foydalanuvchilar: **{}** ta",
-        'admin_broadcast_ask': "Ommaviy xabarni yuboring (Matn, rasm yoki video):",
-        'broadcast_success': "✅ Xabar barcha foydalanuvchilarga yuborildi!",
+        'blocked_msg': "🚫 Siz botdan foydalanish uchun bloklangansiz!",
         'similar_title': "\n\n👇 **O'xshash variantlar:**"
     },
     'ru': {
@@ -68,9 +74,7 @@ TEXTS = {
         'lang_changed': "🇷🇺 Язык изменен!",
         'btn_top': "🔥 Топ-10 Треков",
         'btn_lang': "🌐 Сменить язык",
-        'admin_stats': "📊 **Статистика бота:**\n\nВсего пользователей: **{}**",
-        'admin_broadcast_ask': "Отправьте рассылку (Текст, фото или видео):",
-        'broadcast_success': "✅ Рассылка успешно отправлена всем!",
+        'blocked_msg': "🚫 Вы заблокированы в этом боте!",
         'similar_title': "\n\n👇 **Похожие варианты:**"
     },
     'en': {
@@ -83,24 +87,15 @@ TEXTS = {
         'lang_changed': "🇬🇧 Language changed!",
         'btn_top': "🔥 Top-10 Tracks",
         'btn_lang': "🌐 Change Language",
-        'admin_stats': "📊 **Bot Statistics:**\n\nTotal Users: **{}**",
-        'admin_broadcast_ask': "Send the broadcast message (Text, photo or video):",
-        'broadcast_success': "✅ Broadcast successfully sent!",
+        'blocked_msg': "🚫 You are blocked from using this bot!",
         'similar_title': "\n\n👇 **Similar tracks:**"
     }
 }
 
 TOP_TRACKS = [
-    "Alan Walker - Darkside",
-    "Indila - Derniere Danse",
-    "The Weeknd - Blinding Lights",
-    "Eminem - Mockingbird",
-    "Glass Animals - Heat Waves",
-    "Tom Odell - Another Love",
-    "Xcho - Ты и Я",
-    "Miyagi & Эндшпиль - I Got Love",
-    "Jony - Комета",
-    "Soolking - Zemër"
+    "Alan Walker - Darkside", "Indila - Derniere Danse", "The Weeknd - Blinding Lights",
+    "Eminem - Mockingbird", "Glass Animals - Heat Waves", "Tom Odell - Another Love",
+    "Xcho - Ты и Я", "Miyagi & Эндшпиль - I Got Love", "Jony - Комета", "Soolking - Zemër"
 ]
 
 def get_user_lang(user_id):
@@ -113,8 +108,15 @@ def get_main_keyboard(user_id):
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
+def is_blocked(user_id):
+    return user_id in blocked_users
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    if is_blocked(user_id):
+        await update.message.reply_text(TEXTS['uz']['blocked_msg'])
+        return
+
     if user_id not in users_list:
         users_list.add(user_id)
         save_data(USERS_FILE, list(users_list))
@@ -156,11 +158,11 @@ async def change_lang_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def show_top_tracks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    if is_blocked(user_id): return
     lang = get_user_lang(user_id)
     
     keyboard = []
     for idx, track in enumerate(TOP_TRACKS):
-        # Callback data uzunligini chegaralash uchun prefiks ishlatamiz
         keyboard.append([InlineKeyboardButton(f"🎵 {track}", callback_data=f"dl_{idx}")])
     
     await update.message.reply_text(
@@ -172,14 +174,18 @@ async def show_top_tracks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def top_track_download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    if is_blocked(query.from_user.id): return
     idx = int(query.data.replace("dl_", ""))
     track_name = TOP_TRACKS[idx]
     await download_and_send(query.message, track_name, query.from_user.id)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
     user_id = update.effective_user.id
+    if is_blocked(user_id):
+        await update.message.reply_text(TEXTS['uz']['blocked_msg'])
+        return
 
+    text = update.message.text
     if text in [TEXTS['uz']['btn_top'], TEXTS['ru']['btn_top'], TEXTS['en']['btn_top']]:
         await show_top_tracks(update, context)
     elif text in [TEXTS['uz']['btn_lang'], TEXTS['ru']['btn_lang'], TEXTS['en']['btn_lang']]:
@@ -187,12 +193,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await download_and_send(update.message, text, user_id)
 
-# Tezlashtirilgan va xatosiz yuklash funksiyasi
 async def download_and_send(message_obj, query, user_id):
     lang = get_user_lang(user_id)
     status_msg = await message_obj.reply_text(TEXTS[lang]['search'].format(query), parse_mode="Markdown")
 
-    # Qidirish va yuklash bitta bosqichda bajariladi
     ydl_opts = {
         'format': 'bestaudio/best',
         'default_search': 'scsearch3',
@@ -208,19 +212,13 @@ async def download_and_send(message_obj, query, user_id):
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Birdaniga yuklaymiz (Double-query tezlikni sekinlashtirayotgan edi)
             info = ydl.extract_info(query, download=True)
-            
             if not info:
                 await status_msg.edit_text(TEXTS[lang]['not_found'])
                 return
 
-            if 'entries' in info and info['entries']:
-                entries = info['entries']
-                primary_entry = entries[0]
-            else:
-                entries = [info]
-                primary_entry = info
+            entries = info.get('entries', [info])
+            primary_entry = entries[0]
 
             file_path = ydl.prepare_filename(primary_entry)
             file_path = os.path.splitext(file_path)[0] + ".mp3"
@@ -234,7 +232,6 @@ async def download_and_send(message_obj, query, user_id):
                 for alt_track in entries[1:3]:
                     alt_title = alt_track.get('title', 'Trek')
                     display_title = alt_title[:30] + "..." if len(alt_title) > 30 else alt_title
-                    # Callback buyrug'ini qisqa qilamiz
                     similar_buttons.append([InlineKeyboardButton(f"🎵 {display_title}", callback_data=f"search_{display_title}")])
 
             reply_markup = InlineKeyboardMarkup(similar_buttons) if similar_buttons else None
@@ -245,11 +242,8 @@ async def download_and_send(message_obj, query, user_id):
 
             with open(file_path, 'rb') as audio:
                 await message_obj.reply_audio(
-                    audio=audio,
-                    title=title,
-                    caption=caption_text,
-                    reply_markup=reply_markup,
-                    parse_mode="Markdown"
+                    audio=audio, title=title, caption=caption_text,
+                    reply_markup=reply_markup, parse_mode="Markdown"
                 )
             await status_msg.delete()
             os.remove(file_path)
@@ -263,17 +257,35 @@ async def download_and_send(message_obj, query, user_id):
 async def search_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    if is_blocked(query.from_user.id): return
     search_query = query.data.replace("search_", "")
     await download_and_send(query.message, search_query, query.from_user.id)
 
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ----------------- PAROLLI ADMIN PANEL -----------------
+
+async def ask_admin_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
-        return
-    keyboard = [
-        [InlineKeyboardButton("📊 Statistikani ko'rish", callback_data="admin_stats")],
-        [InlineKeyboardButton("📢 Ommaviy xabar yuborish", callback_data="admin_broadcast")]
-    ]
-    await update.message.reply_text("⚙️ **Admin Panel:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        return ConversationHandler.END
+    await update.message.reply_text("🔑 **Admin panelga kirish uchun parolni kiriting:**")
+    return AUTH_STATE
+
+async def verify_admin_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return ConversationHandler.END
+
+    if update.message.text.strip() == ADMIN_PASSWORD:
+        keyboard = [
+            [InlineKeyboardButton("📊 Statistikani ko'rish", callback_data="admin_stats")],
+            [InlineKeyboardButton("👥 Foydalanuvchilar ID ro'yxati", callback_data="admin_users")],
+            [InlineKeyboardButton("🚫 Foydalanuvchini bloklash", callback_data="admin_ban")],
+            [InlineKeyboardButton("✅ Blokdan chiqarish", callback_data="admin_unban")],
+            [InlineKeyboardButton("📢 Ommaviy xabar yuborish", callback_data="admin_broadcast")]
+        ]
+        await update.message.reply_text("🔓 **Parol to'g'ri! Admin Panel:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        return ConversationHandler.END
+    else:
+        await update.message.reply_text("❌ **Parol noto'g'ri!** Kirish rad etildi.")
+        return ConversationHandler.END
 
 async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -282,29 +294,66 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     if query.data == "admin_stats":
-        lang = get_user_lang(ADMIN_ID)
-        await query.message.reply_text(TEXTS[lang]['admin_stats'].format(len(users_list)), parse_mode="Markdown")
+        msg = f"📊 **Bot statistikasi:**\n\n"
+        msg += f"Jami foydalanuvchilar: **{len(users_list)}** ta\n"
+        msg += f"Bloklanganlar: **{len(blocked_users)}** ta"
+        await query.message.reply_text(msg, parse_mode="Markdown")
+    
+    elif query.data == "admin_users":
+        users_str = "\n".join([f"`{u}`" for u in list(users_list)[:50]])
+        await query.message.reply_text(f"👥 **Foydalanuvchilar ID ro'yxati:**\n\n{users_str}", parse_mode="Markdown")
+
     elif query.data == "admin_broadcast":
-        await query.message.reply_text("📢 **Barcha foydalanuvchilarga yubormoqchi bo'lgan xabaringizni yuboring:**")
+        await query.message.reply_text("📢 **Barcha foydalanuvchilarga yubormoqchi bo'lgan xabaringizni yuboring:**\n\n_(Bekor qilish uchun /cancel yuboring)_")
         return BROADCAST_STATE
 
+    elif query.data == "admin_ban":
+        await query.message.reply_text("🚫 **Bloklamoqchi bo'lgan foydalanuvchining ID raqamini yuboring:**\n\n_(Bekor qilish uchun /cancel yuboring)_")
+        return BAN_STATE
+
+    elif query.data == "admin_unban":
+        await query.message.reply_text("✅ **Blokdan chiqarmoqchi bo'lgan ID raqamni yuboring:**\n\n_(Bekor qilish uchun /cancel yuboring)_")
+        return UNBAN_STATE
+
 async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return ConversationHandler.END
-    
+    if update.effective_user.id != ADMIN_ID: return ConversationHandler.END
     count = 0
     for uid in users_list:
-        try:
-            await update.message.copy(chat_id=uid)
-            count += 1
-        except Exception:
-            pass
-            
+        if uid not in blocked_users:
+            try:
+                await update.message.copy(chat_id=uid)
+                count += 1
+            except Exception: pass
     await update.message.reply_text(f"✅ Xabar **{count}** ta foydalanuvchiga muvaffaqiyatli yetkazildi!", parse_mode="Markdown")
     return ConversationHandler.END
 
-async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Reklama yuborish bekor qilindi.")
+async def process_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return ConversationHandler.END
+    try:
+        target_id = int(update.message.text.strip())
+        blocked_users.add(target_id)
+        save_data(BLOCKED_FILE, list(blocked_users))
+        await update.message.reply_text(f"🚫 `{target_id}` muvaffaqiyatli bloklandi!", parse_mode="Markdown")
+    except ValueError:
+        await update.message.reply_text("❌ Xatolik! Faqat raqamli Telegram ID yuboring.")
+    return ConversationHandler.END
+
+async def process_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return ConversationHandler.END
+    try:
+        target_id = int(update.message.text.strip())
+        if target_id in blocked_users:
+            blocked_users.remove(target_id)
+            save_data(BLOCKED_FILE, list(blocked_users))
+            await update.message.reply_text(f"✅ `{target_id}` blokdan chiqarildi!", parse_mode="Markdown")
+        else:
+            await update.message.reply_text("⚠️ Bu ID bloklanganlar ro'yxatida yo'q.")
+    except ValueError:
+        await update.message.reply_text("❌ Xatolik! Faqat raqamli Telegram ID yuboring.")
+    return ConversationHandler.END
+
+async def cancel_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Amal bekor qilindi.")
     return ConversationHandler.END
 
 def main():
@@ -312,17 +361,25 @@ def main():
 
     app = Application.builder().token(TOKEN).build()
 
-    broadcast_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(admin_callback, pattern="^admin_broadcast$")],
+    # Admin parolini tekshirish va amallar uchun muloqot tizimi
+    admin_dialog = ConversationHandler(
+        entry_points=[
+            CommandHandler(SECRET_ADMIN_COMMAND, ask_admin_password),
+            CallbackQueryHandler(admin_callback, pattern="^admin_broadcast$"),
+            CallbackQueryHandler(admin_callback, pattern="^admin_ban$"),
+            CallbackQueryHandler(admin_callback, pattern="^admin_unban$")
+        ],
         states={
-            BROADCAST_STATE: [MessageHandler(filters.ALL & ~filters.COMMAND, start_broadcast)]
+            AUTH_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, verify_admin_password)],
+            BROADCAST_STATE: [MessageHandler(filters.ALL & ~filters.COMMAND, start_broadcast)],
+            BAN_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_ban)],
+            UNBAN_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_unban)]
         },
-        fallbacks=[CommandHandler("cancel", cancel_broadcast)]
+        fallbacks=[CommandHandler("cancel", cancel_admin_action)]
     )
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("admin", admin_panel))
-    app.add_handler(broadcast_handler)
+    app.add_handler(admin_dialog)
     
     app.add_handler(CallbackQueryHandler(set_language_callback, pattern="^set_lang_"))
     app.add_handler(CallbackQueryHandler(top_track_download_callback, pattern="^dl_"))
