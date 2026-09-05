@@ -18,7 +18,7 @@ BROADCAST_STATE = 1
 
 os.makedirs("downloads", exist_ok=True)
 
-# Fake Web Server (Render port xatosini oldini olish uchun)
+# Render port xatosini oldini olish uchun Soxta Web Server
 class DummyServer(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -30,7 +30,7 @@ def run_dummy_server():
     server = HTTPServer(('0.0.0.0', port), DummyServer)
     server.serve_forever()
 
-# Ma'lumotlarni saqlash funksiyalari
+# Ma'lumotlarni faylga saqlash va yuklash
 def load_data(file_path, default):
     if os.path.exists(file_path):
         with open(file_path, "r", encoding="utf-8") as f:
@@ -58,7 +58,8 @@ TEXTS = {
         'btn_lang': "🌐 Tilni o'zgartirish",
         'admin_stats': "📊 **Bot statistikasi:**\n\nJami foydalanuvchilar: **{}** ta",
         'admin_broadcast_ask': "Ommaviy xabarni yuboring (Matn, rasm yoki video):",
-        'broadcast_success': "✅ Xabar barcha foydalanuvchilarga yuborildi!"
+        'broadcast_success': "✅ Xabar barcha foydalanuvchilarga yuborildi!",
+        'similar_title': "\n\n👇 **O'xshash variantlar:**"
     },
     'ru': {
         'start': "Здравствуйте! Отправьте название музыки или используйте меню:",
@@ -72,7 +73,8 @@ TEXTS = {
         'btn_lang': "🌐 Сменить язык",
         'admin_stats': "📊 **Статистика бота:**\n\nВсего пользователей: **{}**",
         'admin_broadcast_ask': "Отправьте рассылку (Текст, фото или видео):",
-        'broadcast_success': "✅ Рассылка успешно отправлена всем!"
+        'broadcast_success': "✅ Рассылка успешно отправлена всем!",
+        'similar_title': "\n\n👇 **Похожие варианты:**"
     },
     'en': {
         'start': "Hello! Send the music title or use the menu below:",
@@ -86,7 +88,8 @@ TEXTS = {
         'btn_lang': "🌐 Change Language",
         'admin_stats': "📊 **Bot Statistics:**\n\nTotal Users: **{}**",
         'admin_broadcast_ask': "Send the broadcast message (Text, photo or video):",
-        'broadcast_success': "✅ Broadcast successfully sent!"
+        'broadcast_success': "✅ Broadcast successfully sent!",
+        'similar_title': "\n\n👇 **Similar tracks:**"
     }
 }
 
@@ -114,7 +117,7 @@ def get_main_keyboard(user_id):
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# Bot komandalari
+# Start komandasi
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id not in users_list:
@@ -132,6 +135,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lang = get_user_lang(user_id)
         await update.message.reply_text(TEXTS[lang]['start'], reply_markup=get_main_keyboard(user_id))
 
+# Tilni tanlash callback
 async def set_language_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -156,6 +160,7 @@ async def change_lang_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     ]
     await update.message.reply_text("Tilni tanlang / Select language:", reply_markup=InlineKeyboardMarkup(keyboard))
 
+# Top-10 menyusi
 async def show_top_tracks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang = get_user_lang(user_id)
@@ -176,10 +181,10 @@ async def top_track_download_callback(update: Update, context: ContextTypes.DEFA
     track_name = query.data.replace("dl_", "")
     await download_and_send(query.message, track_name, query.from_user.id)
 
+# Matnli xabarlarni qayta ishlash
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user_id = update.effective_user.id
-    lang = get_user_lang(user_id)
 
     if text in [TEXTS['uz']['btn_top'], TEXTS['ru']['btn_top'], TEXTS['en']['btn_top']]:
         await show_top_tracks(update, context)
@@ -188,13 +193,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await download_and_send(update.message, text, user_id)
 
+# Musiqani qidirish, yuklash va o'xshash variantlarni chiqarish
 async def download_and_send(message_obj, query, user_id):
     lang = get_user_lang(user_id)
     status_msg = await message_obj.reply_text(TEXTS[lang]['search'].format(query), parse_mode="Markdown")
 
     ydl_opts = {
         'format': 'bestaudio/best',
-        'default_search': 'scsearch1',
+        'default_search': 'scsearch4',
         'outtmpl': 'downloads/%(title)s.%(ext)s',
         'quiet': True,
         'noplaylist': True,
@@ -207,9 +213,15 @@ async def download_and_send(message_obj, query, user_id):
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(query, download=True)
-            if 'entries' in info and info['entries']:
-                info = info['entries'][0]
+            search_results = ydl.extract_info(query, download=False)
+            
+            if 'entries' not in search_results or not search_results['entries']:
+                await status_msg.edit_text(TEXTS[lang]['not_found'])
+                return
+
+            entries = search_results['entries']
+            primary_entry = entries[0]
+            info = ydl.extract_info(primary_entry['webpage_url'], download=True)
 
             file_path = ydl.prepare_filename(info)
             file_path = os.path.splitext(file_path)[0] + ".mp3"
@@ -217,11 +229,26 @@ async def download_and_send(message_obj, query, user_id):
 
         if file_path and os.path.exists(file_path):
             await status_msg.edit_text(TEXTS[lang]['sending'])
+            
+            similar_buttons = []
+            if len(entries) > 1:
+                for alt_track in entries[1:4]:
+                    alt_title = alt_track.get('title', 'Trek')
+                    display_title = alt_title[:35] + "..." if len(alt_title) > 35 else alt_title
+                    similar_buttons.append([InlineKeyboardButton(f"🎵 {display_title}", callback_data=f"dl_{display_title}")])
+
+            reply_markup = InlineKeyboardMarkup(similar_buttons) if similar_buttons else None
+            caption_text = f"🎧 **{title}**\n\n🤖 @musiqa_qidiruv_bot"
+            
+            if similar_buttons:
+                caption_text += TEXTS[lang]['similar_title']
+
             with open(file_path, 'rb') as audio:
                 await message_obj.reply_audio(
                     audio=audio,
                     title=title,
-                    caption=f"🎧 **{title}**\n\n🤖 @musiqa_qidiruv_bot",
+                    caption=caption_text,
+                    reply_markup=reply_markup,
                     parse_mode="Markdown"
                 )
             await status_msg.delete()
@@ -233,7 +260,7 @@ async def download_and_send(message_obj, query, user_id):
         print(f"Log error: {e}")
         await status_msg.edit_text(TEXTS[lang]['not_found'])
 
-# Admin panel funksiyalari
+# Admin panel
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -280,7 +307,6 @@ def main():
 
     app = Application.builder().token(TOKEN).build()
 
-    # Admin Broadcast Conversation
     broadcast_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_callback, pattern="^admin_broadcast$")],
         states={
