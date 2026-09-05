@@ -11,7 +11,7 @@ from telegram.ext import (
 
 TOKEN = "8925112663:AAECTaUL7PXfG1WtbegB4-GgX4BBbK3glI0"
 ADMIN_ID = 8294462170  # <--- O'ZINGIZNING TELEGRAM ID RAQAMINGIZ
-SECRET_ADMIN_COMMAND = "secret admin"  # <--- ADMIN BUYRUG'I (Masalan: /secret_control)
+SECRET_ADMIN_COMMAND = "secretadmin"  # <--- ADMIN BUYRUG'I (Masalan: /secret_control)
 ADMIN_PASSWORD = "20122607Nodirjon"  # <--- ADMIN PANEL PAROLI
 
 USERS_FILE = "users.json"
