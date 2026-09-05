@@ -30,7 +30,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[KeyboardButton("/start")]]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
         await update.message.reply_text(
-            "Assalomu alaykum! Botdan foydalanish uchun pastdagi /start tugmasini bosing.",
+            "Assalomu alaykum! Musiqa nomini yuboring:",
             reply_markup=reply_markup
         )
     else:
@@ -41,12 +41,16 @@ async def search_and_send_audio(update: Update, context: ContextTypes.DEFAULT_TY
     status_msg = await update.message.reply_text(f"🔍 `{query}` bo'yicha musiqa qidirilmoqda...", parse_mode="Markdown")
 
     ydl_opts = {
-        'format': 'm4a/bestaudio/best',
-        'default_search': 'ytsearch1',
+        'format': 'bestaudio/best',
+        'default_search': 'scsearch1',
         'outtmpl': 'downloads/%(title)s.%(ext)s',
         'quiet': True,
         'noplaylist': True,
-        'socket_timeout': 60
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
     }
 
     try:
@@ -56,6 +60,7 @@ async def search_and_send_audio(update: Update, context: ContextTypes.DEFAULT_TY
                 info = info['entries'][0]
 
             file_path = ydl.prepare_filename(info)
+            file_path = os.path.splitext(file_path)[0] + ".mp3"
             title = info.get('title', 'Musiqa')
 
         if file_path and os.path.exists(file_path):
@@ -73,8 +78,8 @@ async def search_and_send_audio(update: Update, context: ContextTypes.DEFAULT_TY
             await status_msg.edit_text("❌ Musiqa fayli topilmadi.")
 
     except Exception as e:
-        print(f"Xatolik: {e}")
-        await status_msg.edit_text("❌ Qidiruvda xatolik yuz berdi. Qayta urinib ko'ring.")
+        print(f"Server Log Xatosi: {e}")
+        await status_msg.edit_text("❌ Musiqa topilmadi yoki yuklashda xatolik yuz berdi.")
 
 def main():
     app = Application.builder().token(TOKEN).build()
