@@ -3,56 +3,194 @@ import json
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import yt_dlp
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ContextTypes, ConversationHandler, filters
+)
 
 TOKEN = "8925112663:AAECTaUL7PXfG1WtbegB4-GgX4BBbK3glI0"
+ADMIN_ID = 20122607  # <--- O'ZINGIZNING TELEGRAM ID RAQAMINGIZNI YOZING
+
 USERS_FILE = "users.json"
+LANGS_FILE = "user_langs.json"
+BROADCAST_STATE = 1
 
 os.makedirs("downloads", exist_ok=True)
 
-# Render port talab qilgani uchun soxta server
+# Fake Web Server (Render port xatosini oldini olish uchun)
 class DummyServer(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot is running!")
+        self.wfile.write(b"Bot ishlamoqda!")
 
 def run_dummy_server():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(('0.0.0.0', port), DummyServer)
     server.serve_forever()
 
-def load_users():
-    if os.path.exists(USERS_FILE):
-        with open(USERS_FILE, "r") as f:
-            return set(json.load(f))
-    return set()
+# Ma'lumotlarni saqlash funksiyalari
+def load_data(file_path, default):
+    if os.path.exists(file_path):
+        with open(file_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return default
 
-def save_users(users):
-    with open(USERS_FILE, "w") as f:
-        json.dump(list(users), f)
+def save_data(file_path, data):
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-known_users = load_users()
+users_list = set(load_data(USERS_FILE, []))
+user_langs = load_data(LANGS_FILE, {})
 
+# Matnlar lug'ati (3 ta til uchun)
+TEXTS = {
+    'uz': {
+        'start': "Assalomu alaykum! Musiqa nomini yuboring yoki menyudan foydalaning:",
+        'search': "🔍 `{}` bo'yicha musiqa qidirilmoqda...",
+        'sending': "⚡️ Musiqa yuborilmoqda...",
+        'not_found': "❌ Musiqa topilmadi yoki yuklashda xatolik yuz berdi.",
+        'top_title': "🔥 **Eng ommabop top-10 musiqalar:**\n\nBiror birini tanlab bosing:",
+        'lang_select': "Tilni tanlang / Select language / Выберите язык:",
+        'lang_changed': "🇺🇿 Til o'zgartirildi!",
+        'btn_top': "🔥 Top-10 Musiqa",
+        'btn_lang': "🌐 Tilni o'zgartirish",
+        'admin_stats': "📊 **Bot statistikasi:**\n\nJami foydalanuvchilar: **{}** ta",
+        'admin_broadcast_ask': "Ommaviy xabarni yuboring (Matn, rasm yoki video):",
+        'broadcast_success': "✅ Xabar barcha foydalanuvchilarga yuborildi!"
+    },
+    'ru': {
+        'start': "Здравствуйте! Отправьте название музыки или используйте меню:",
+        'search': "🔍 Идет поиск музыки по запросу `{}`...",
+        'sending': "⚡️ Музыка отправляется...",
+        'not_found': "❌ Музыка не найдена или произошла ошибка при загрузке.",
+        'top_title': "🔥 **Топ-10 популярных треков:**\n\nВыберите один из них:",
+        'lang_select': "Выберите язык / Select language:",
+        'lang_changed': "🇷🇺 Язык изменен!",
+        'btn_top': "🔥 Топ-10 Треков",
+        'btn_lang': "🌐 Сменить язык",
+        'admin_stats': "📊 **Статистика бота:**\n\nВсего пользователей: **{}**",
+        'admin_broadcast_ask': "Отправьте рассылку (Текст, фото или видео):",
+        'broadcast_success': "✅ Рассылка успешно отправлена всем!"
+    },
+    'en': {
+        'start': "Hello! Send the music title or use the menu below:",
+        'search': "🔍 Searching for `{}`...",
+        'sending': "⚡️ Sending audio...",
+        'not_found': "❌ Music not found or download failed.",
+        'top_title': "🔥 **Top-10 popular tracks:**\n\nSelect one to download:",
+        'lang_select': "Select language:",
+        'lang_changed': "🇬🇧 Language changed!",
+        'btn_top': "🔥 Top-10 Tracks",
+        'btn_lang': "🌐 Change Language",
+        'admin_stats': "📊 **Bot Statistics:**\n\nTotal Users: **{}**",
+        'admin_broadcast_ask': "Send the broadcast message (Text, photo or video):",
+        'broadcast_success': "✅ Broadcast successfully sent!"
+    }
+}
+
+# Top-10 musiqalar ro'yxati
+TOP_TRACKS = [
+    "Alan Walker - Darkside",
+    "Indila - Derniere Danse",
+    "The Weeknd - Blinding Lights",
+    "Eminem - Mockingbird",
+    "Glass Animals - Heat Waves",
+    "Tom Odell - Another Love",
+    "Xcho - Ты и Я",
+    "Miyagi & Эндшпиль - I Got Love",
+    "Jony - Комета",
+    "Soolking - Zemër"
+]
+
+def get_user_lang(user_id):
+    return user_langs.get(str(user_id), 'uz')
+
+def get_main_keyboard(user_id):
+    lang = get_user_lang(user_id)
+    keyboard = [
+        [KeyboardButton(TEXTS[lang]['btn_top']), KeyboardButton(TEXTS[lang]['btn_lang'])]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+# Bot komandalari
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id not in known_users:
-        known_users.add(user_id)
-        save_users(known_users)
-        
-        keyboard = [[KeyboardButton("/start")]]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-        await update.message.reply_text(
-            "Assalomu alaykum! Musiqa nomini yuboring:",
-            reply_markup=reply_markup
-        )
-    else:
-        await update.message.reply_text("Xush kelibsiz! Qaysi musiqani qidiryapsiz? Nomini yuboring:")
+    if user_id not in users_list:
+        users_list.add(user_id)
+        save_data(USERS_FILE, list(users_list))
 
-async def search_and_send_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.message.text
-    status_msg = await update.message.reply_text(f"🔍 `{query}` bo'yicha musiqa qidirilmoqda...", parse_mode="Markdown")
+    if str(user_id) not in user_langs:
+        keyboard = [
+            [InlineKeyboardButton("🇺🇿 O'zbekcha", callback_data="set_lang_uz")],
+            [InlineKeyboardButton("🇷🇺 Русский", callback_data="set_lang_ru")],
+            [InlineKeyboardButton("🇬🇧 English", callback_data="set_lang_en")]
+        ]
+        await update.message.reply_text("Tilni tanlang / Select language:", reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        lang = get_user_lang(user_id)
+        await update.message.reply_text(TEXTS[lang]['start'], reply_markup=get_main_keyboard(user_id))
+
+async def set_language_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    lang = query.data.split("_")[-1]
+    
+    user_langs[str(user_id)] = lang
+    save_data(LANGS_FILE, user_langs)
+    
+    await query.message.delete()
+    await context.bot.send_message(
+        chat_id=user_id,
+        text=TEXTS[lang]['lang_changed'],
+        reply_markup=get_main_keyboard(user_id)
+    )
+
+async def change_lang_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("🇺🇿 O'zbekcha", callback_data="set_lang_uz")],
+        [InlineKeyboardButton("🇷🇺 Русский", callback_data="set_lang_ru")],
+        [InlineKeyboardButton("🇬🇧 English", callback_data="set_lang_en")]
+    ]
+    await update.message.reply_text("Tilni tanlang / Select language:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def show_top_tracks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    lang = get_user_lang(user_id)
+    
+    keyboard = []
+    for track in TOP_TRACKS:
+        keyboard.append([InlineKeyboardButton(f"🎵 {track}", callback_data=f"dl_{track}")])
+    
+    await update.message.reply_text(
+        TEXTS[lang]['top_title'],
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
+async def top_track_download_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    track_name = query.data.replace("dl_", "")
+    await download_and_send(query.message, track_name, query.from_user.id)
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    user_id = update.effective_user.id
+    lang = get_user_lang(user_id)
+
+    if text in [TEXTS['uz']['btn_top'], TEXTS['ru']['btn_top'], TEXTS['en']['btn_top']]:
+        await show_top_tracks(update, context)
+    elif text in [TEXTS['uz']['btn_lang'], TEXTS['ru']['btn_lang'], TEXTS['en']['btn_lang']]:
+        await change_lang_command(update, context)
+    else:
+        await download_and_send(update.message, text, user_id)
+
+async def download_and_send(message_obj, query, user_id):
+    lang = get_user_lang(user_id)
+    status_msg = await message_obj.reply_text(TEXTS[lang]['search'].format(query), parse_mode="Markdown")
 
     ydl_opts = {
         'format': 'bestaudio/best',
@@ -78,30 +216,88 @@ async def search_and_send_audio(update: Update, context: ContextTypes.DEFAULT_TY
             title = info.get('title', 'Musiqa')
 
         if file_path and os.path.exists(file_path):
-            await status_msg.edit_text("⚡️ Musiqa yuborilmoqda...")
+            await status_msg.edit_text(TEXTS[lang]['sending'])
             with open(file_path, 'rb') as audio:
-                await update.message.reply_audio(
+                await message_obj.reply_audio(
                     audio=audio,
                     title=title,
-                    caption=f"🎧 **{title}**\n\n🤖 @musiqa_qidiruv_bot orqali yuklandi",
+                    caption=f"🎧 **{title}**\n\n🤖 @musiqa_qidiruv_bot",
                     parse_mode="Markdown"
                 )
             await status_msg.delete()
             os.remove(file_path)
         else:
-            await status_msg.edit_text("❌ Musiqa fayli topilmadi.")
+            await status_msg.edit_text(TEXTS[lang]['not_found'])
 
     except Exception as e:
-        print(f"Server Log Xatosi: {e}")
-        await status_msg.edit_text("❌ Musiqa topilmadi yoki yuklashda xatolik yuz berdi.")
+        print(f"Log error: {e}")
+        await status_msg.edit_text(TEXTS[lang]['not_found'])
+
+# Admin panel funksiyalari
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    keyboard = [
+        [InlineKeyboardButton("📊 Statistikani ko'rish", callback_data="admin_stats")],
+        [InlineKeyboardButton("📢 Ommaviy xabar yuborish", callback_data="admin_broadcast")]
+    ]
+    await update.message.reply_text("⚙️ **Admin Panel:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query.from_user.id != ADMIN_ID:
+        return
+    await query.answer()
+
+    if query.data == "admin_stats":
+        lang = get_user_lang(ADMIN_ID)
+        await query.message.reply_text(TEXTS[lang]['admin_stats'].format(len(users_list)), parse_mode="Markdown")
+    elif query.data == "admin_broadcast":
+        await query.message.reply_text("📢 **Barcha foydalanuvchilarga yubormoqchi bo'lgan xabaringizni yuboring:**")
+        return BROADCAST_STATE
+
+async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return ConversationHandler.END
+    
+    count = 0
+    for uid in users_list:
+        try:
+            await update.message.copy(chat_id=uid)
+            count += 1
+        except Exception:
+            pass
+            
+    await update.message.reply_text(f"✅ Xabar **{count}** ta foydalanuvchiga muvaffaqiyatli yetkazildi!", parse_mode="Markdown")
+    return ConversationHandler.END
+
+async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Reklama yuborish bekor qilindi.")
+    return ConversationHandler.END
 
 def main():
-    # Render port xatosi bermasligi uchun web-serverni alohida potokda yoqamiz
     threading.Thread(target=run_dummy_server, daemon=True).start()
 
     app = Application.builder().token(TOKEN).build()
+
+    # Admin Broadcast Conversation
+    broadcast_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(admin_callback, pattern="^admin_broadcast$")],
+        states={
+            BROADCAST_STATE: [MessageHandler(filters.ALL & ~filters.COMMAND, start_broadcast)]
+        },
+        fallbacks=[CommandHandler("cancel", cancel_broadcast)]
+    )
+
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_and_send_audio))
+    app.add_handler(CommandHandler("admin", admin_panel))
+    app.add_handler(broadcast_handler)
+    
+    app.add_handler(CallbackQueryHandler(set_language_callback, pattern="^set_lang_"))
+    app.add_handler(CallbackQueryHandler(top_track_download_callback, pattern="^dl_"))
+    app.add_handler(CallbackQueryHandler(admin_callback))
+    
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
     print("Bot muvaffaqiyatli ishga tushdi...")
     app.run_polling()
