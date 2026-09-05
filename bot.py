@@ -4,8 +4,10 @@ import yt_dlp
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-TOKEN = os.getenv("8925112663:AAECTaUL7PXfG1WtbegB4-GgX4BBbK3glI0")
+TOKEN = "8925112663:AAECTaUL7PXfG1WtbegB4-GgX4BBbK3glI0"
 USERS_FILE = "users.json"
+
+os.makedirs("downloads", exist_ok=True)
 
 def load_users():
     if os.path.exists(USERS_FILE):
@@ -21,14 +23,12 @@ known_users = load_users()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    
     if user_id not in known_users:
         known_users.add(user_id)
         save_users(known_users)
         
         keyboard = [[KeyboardButton("/start")]]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-        
         await update.message.reply_text(
             "Assalomu alaykum! Botdan foydalanish uchun pastdagi /start tugmasini bosing.",
             reply_markup=reply_markup
@@ -41,49 +41,43 @@ async def search_and_send_audio(update: Update, context: ContextTypes.DEFAULT_TY
     status_msg = await update.message.reply_text(f"🔍 `{query}` bo'yicha musiqa qidirilmoqda...", parse_mode="Markdown")
 
     ydl_opts = {
-        'format': 'bestaudio/best',
+        'format': 'm4a/bestaudio/best',
         'default_search': 'ytsearch1',
         'outtmpl': 'downloads/%(title)s.%(ext)s',
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }],
-        'quiet': True
+        'quiet': True,
+        'noplaylist': True,
+        'socket_timeout': 60
     }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(query, download=True)
-            if 'entries' in info:
+            if 'entries' in info and info['entries']:
                 info = info['entries'][0]
 
             file_path = ydl.prepare_filename(info)
-            file_path = os.path.splitext(file_path)[0] + ".mp3"
             title = info.get('title', 'Musiqa')
 
-        await status_msg.edit_text("⚡️ Musiqa yuklanmoqda, ozgina kuting...")
-
-        with open(file_path, 'rb') as audio:
-            await update.message.reply_audio(
-                audio=audio,
-                title=title,
-                caption=f"🎧 **{title}**\n\n🤖 @musiqa_qidiruv_bot orqali yuklandi",
-                parse_mode="Markdown"
-            )
-
-        await status_msg.delete()
-
-        if os.path.exists(file_path):
+        if file_path and os.path.exists(file_path):
+            await status_msg.edit_text("⚡️ Musiqa yuborilmoqda...")
+            with open(file_path, 'rb') as audio:
+                await update.message.reply_audio(
+                    audio=audio,
+                    title=title,
+                    caption=f"🎧 **{title}**\n\n🤖 @musiqa_qidiruv_bot orqali yuklandi",
+                    parse_mode="Markdown"
+                )
+            await status_msg.delete()
             os.remove(file_path)
+        else:
+            await status_msg.edit_text("❌ Musiqa fayli topilmadi.")
 
     except Exception as e:
-        await status_msg.edit_text("❌ Musiqa topilmadi yoki yuklashda xatolik yuz berdi.")
         print(f"Xatolik: {e}")
+        await status_msg.edit_text("❌ Qidiruvda xatolik yuz berdi. Qayta urinib ko'ring.")
 
 def main():
     app = Application.builder().token(TOKEN).build()
-    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_and_send_audio))
     
