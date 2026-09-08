@@ -10,18 +10,16 @@ from telegram.ext import (
 )
 
 TOKEN = "8925112663:AAECTaUL7PXfG1WtbegB4-GgX4BBbK3glI0"
-ADMIN_ID = 8294462170  # <--- O'ZINGIZNING TELEGRAM ID RAQAMINGIZ
-SECRET_ADMIN_COMMAND = "secretadmin"  # <--- ADMIN BUYRUG'I (Masalan: /secret_control)
-ADMIN_PASSWORD = "20122607Nodirjon"  # <--- ADMIN PANEL PAROLI
+ADMIN_ID = 8294462170
+SECRET_ADMIN_COMMAND = "secretadmin"
+ADMIN_PASSWORD = "20122607"
 
 USERS_FILE = "users.json"
 LANGS_FILE = "user_langs.json"
 BLOCKED_FILE = "blocked_users.json"
+CACHE_FILE = "audio_cache.json"  # <--- TEZLIK UCHUN KESH FAYLI
 
-AUTH_STATE = 0
-BROADCAST_STATE = 1
-BAN_STATE = 2
-UNBAN_STATE = 3
+AUTH_STATE, BROADCAST_STATE, BAN_STATE, UNBAN_STATE = range(4)
 
 os.makedirs("downloads", exist_ok=True)
 
@@ -49,6 +47,7 @@ def save_data(file_path, data):
 users_list = set(load_data(USERS_FILE, []))
 user_langs = load_data(LANGS_FILE, {})
 blocked_users = set(load_data(BLOCKED_FILE, []))
+audio_cache = load_data(CACHE_FILE, {}) # <--- KESH BAZASI
 
 TEXTS = {
     'uz': {
@@ -57,12 +56,11 @@ TEXTS = {
         'sending': "⚡️ Musiqa yuborilmoqda...",
         'not_found': "❌ Musiqa topilmadi yoki yuklashda xatolik yuz berdi.",
         'top_title': "🔥 **Eng ommabop top-10 musiqalar:**\n\nBiror birini tanlab bosing:",
-        'lang_select': "Tilni tanlang / Select language / Выберите язык:",
+        'lang_select': "Tilni tanlang / Select language:",
         'lang_changed': "🇺🇿 Til o'zgartirildi!",
         'btn_top': "🔥 Top-10 Musiqa",
         'btn_lang': "🌐 Tilni o'zgartirish",
-        'blocked_msg': "🚫 Siz botdan foydalanish uchun bloklangansiz!",
-        'similar_title': "\n\n👇 **O'xshash variantlar:**"
+        'blocked_msg': "🚫 Siz botdan foydalanish uchun bloklangansiz!"
     },
     'ru': {
         'start': "Здравствуйте! Отправьте название музыки или используйте меню:",
@@ -70,12 +68,11 @@ TEXTS = {
         'sending': "⚡️ Музыка отправляется...",
         'not_found': "❌ Музыка не найдена или произошла ошибка при загрузке.",
         'top_title': "🔥 **Топ-10 популярных треков:**\n\nВыберите один из них:",
-        'lang_select': "Выберите язык / Select language:",
+        'lang_select': "Выберите язык:",
         'lang_changed': "🇷🇺 Язык изменен!",
         'btn_top': "🔥 Топ-10 Треков",
         'btn_lang': "🌐 Сменить язык",
-        'blocked_msg': "🚫 Вы заблокированы в этом боте!",
-        'similar_title': "\n\n👇 **Похожие варианты:**"
+        'blocked_msg': "🚫 Вы заблокированы в этом боте!"
     },
     'en': {
         'start': "Hello! Send the music title or use the menu below:",
@@ -87,8 +84,7 @@ TEXTS = {
         'lang_changed': "🇬🇧 Language changed!",
         'btn_top': "🔥 Top-10 Tracks",
         'btn_lang': "🌐 Change Language",
-        'blocked_msg': "🚫 You are blocked from using this bot!",
-        'similar_title': "\n\n👇 **Similar tracks:**"
+        'blocked_msg': "🚫 You are blocked from using this bot!"
     }
 }
 
@@ -195,24 +191,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def download_and_send(message_obj, query, user_id):
     lang = get_user_lang(user_id)
+    clean_query = query.strip().lower()
+
+    # 1. KESH TEKSHIRISH (Agar qo'shiq avval izlangan bo'lsa - 0.1 soniyada yuboradi)
+    if clean_query in audio_cache:
+        cached_data = audio_cache[clean_query]
+        caption_text = f"🎧 **{cached_data['title']}**\n⚡️ _(Tezkor keshdan yuborildi)_"
+        await message_obj.reply_audio(
+            audio=cached_data['file_id'],
+            caption=caption_text,
+            parse_mode="Markdown"
+        )
+        return
+
     status_msg = await message_obj.reply_text(TEXTS[lang]['search'].format(query), parse_mode="Markdown")
 
+    # 2. TEZKOR OPTIMIZATSIYA QILINGAN YT-DLP SOZLAMALARI
     ydl_opts = {
         'format': 'bestaudio/best',
-        'default_search': 'scsearch3',
-        'outtmpl': 'downloads/%(title)s.%(ext)s',
+        'default_search': 'ytsearch1', # 3 ta emas 1 ta eng aniqini tezkor qidiradi
+        'outtmpl': 'downloads/%(id)s.%(ext)s',
         'quiet': True,
         'noplaylist': True,
+        'concurrent_fragment_downloads': 10,
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
-            'preferredquality': '192',
+            'preferredquality': '128', # 192 mas 128 (fayl hajmi kichikroq, yuklash 2 baravar tezroq)
         }],
     }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(query, download=True)
+            info = ydl.extract_info(clean_query, download=True)
             if not info:
                 await status_msg.edit_text(TEXTS[lang]['not_found'])
                 return
@@ -220,31 +231,26 @@ async def download_and_send(message_obj, query, user_id):
             entries = info.get('entries', [info])
             primary_entry = entries[0]
 
-            file_path = ydl.prepare_filename(primary_entry)
-            file_path = os.path.splitext(file_path)[0] + ".mp3"
+            file_path = f"downloads/{primary_entry['id']}.mp3"
             title = primary_entry.get('title', 'Musiqa')
 
         if file_path and os.path.exists(file_path):
             await status_msg.edit_text(TEXTS[lang]['sending'])
-            
-            similar_buttons = []
-            if len(entries) > 1:
-                for alt_track in entries[1:3]:
-                    alt_title = alt_track.get('title', 'Trek')
-                    display_title = alt_title[:30] + "..." if len(alt_title) > 30 else alt_title
-                    similar_buttons.append([InlineKeyboardButton(f"🎵 {display_title}", callback_data=f"search_{display_title}")])
-
-            reply_markup = InlineKeyboardMarkup(similar_buttons) if similar_buttons else None
-            caption_text = f"🎧 **{title}**\n\n🤖 @musiqa_qidiruv_bot"
-            
-            if similar_buttons:
-                caption_text += TEXTS[lang]['similar_title']
+            caption_text = f"🎧 **{title}**"
 
             with open(file_path, 'rb') as audio:
-                await message_obj.reply_audio(
-                    audio=audio, title=title, caption=caption_text,
-                    reply_markup=reply_markup, parse_mode="Markdown"
+                sent_message = await message_obj.reply_audio(
+                    audio=audio, title=title, caption=caption_text, parse_mode="Markdown"
                 )
+                
+                # File ID ni keshga saqlaymiz
+                file_id = sent_message.audio.file_id
+                audio_cache[clean_query] = {
+                    'file_id': file_id,
+                    'title': title
+                }
+                save_data(CACHE_FILE, audio_cache)
+
             await status_msg.delete()
             os.remove(file_path)
         else:
@@ -261,17 +267,15 @@ async def search_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     search_query = query.data.replace("search_", "")
     await download_and_send(query.message, search_query, query.from_user.id)
 
-# ----------------- PAROLLI ADMIN PANEL -----------------
+# ----------------- ADMIN PANEL -----------------
 
 async def ask_admin_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return ConversationHandler.END
+    if update.effective_user.id != ADMIN_ID: return ConversationHandler.END
     await update.message.reply_text("🔑 **Admin panelga kirish uchun parolni kiriting:**")
     return AUTH_STATE
 
 async def verify_admin_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return ConversationHandler.END
+    if update.effective_user.id != ADMIN_ID: return ConversationHandler.END
 
     if update.message.text.strip() == ADMIN_PASSWORD:
         keyboard = [
@@ -289,13 +293,13 @@ async def verify_admin_password(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if query.from_user.id != ADMIN_ID:
-        return
+    if query.from_user.id != ADMIN_ID: return
     await query.answer()
 
     if query.data == "admin_stats":
         msg = f"📊 **Bot statistikasi:**\n\n"
         msg += f"Jami foydalanuvchilar: **{len(users_list)}** ta\n"
+        msg += f"Keshdagi musiqalar: **{len(audio_cache)}** ta\n"
         msg += f"Bloklanganlar: **{len(blocked_users)}** ta"
         await query.message.reply_text(msg, parse_mode="Markdown")
     
@@ -361,7 +365,6 @@ def main():
 
     app = Application.builder().token(TOKEN).build()
 
-    # Admin parolini tekshirish va amallar uchun muloqot tizimi
     admin_dialog = ConversationHandler(
         entry_points=[
             CommandHandler(SECRET_ADMIN_COMMAND, ask_admin_password),
