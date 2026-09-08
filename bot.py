@@ -10,14 +10,14 @@ from telegram.ext import (
 )
 
 TOKEN = "8925112663:AAECTaUL7PXfG1WtbegB4-GgX4BBbK3glI0"
-ADMIN_ID = 8294462170
-SECRET_ADMIN_COMMAND = "secretadmin"
-ADMIN_PASSWORD = "20122607"
+ADMIN_ID = 8294462170  # <--- TELEGRAM ID RAQAMINGIZ
+SECRET_ADMIN_COMMAND = "secretAdmin"  # <--- MAXFIY BUYRUQ
+ADMIN_PASSWORD = "20122607"  # <--- ADMIN PAROLI
 
 USERS_FILE = "users.json"
 LANGS_FILE = "user_langs.json"
 BLOCKED_FILE = "blocked_users.json"
-CACHE_FILE = "audio_cache.json"  # <--- TEZLIK UCHUN KESH FAYLI
+CACHE_FILE = "audio_cache.json"
 
 AUTH_STATE, BROADCAST_STATE, BAN_STATE, UNBAN_STATE = range(4)
 
@@ -36,8 +36,11 @@ def run_dummy_server():
 
 def load_data(file_path, default):
     if os.path.exists(file_path):
-        with open(file_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return default
     return default
 
 def save_data(file_path, data):
@@ -47,7 +50,7 @@ def save_data(file_path, data):
 users_list = set(load_data(USERS_FILE, []))
 user_langs = load_data(LANGS_FILE, {})
 blocked_users = set(load_data(BLOCKED_FILE, []))
-audio_cache = load_data(CACHE_FILE, {}) # <--- KESH BAZASI
+audio_cache = load_data(CACHE_FILE, {})
 
 TEXTS = {
     'uz': {
@@ -193,32 +196,27 @@ async def download_and_send(message_obj, query, user_id):
     lang = get_user_lang(user_id)
     clean_query = query.strip().lower()
 
-    # 1. KESH TEKSHIRISH (Agar qo'shiq avval izlangan bo'lsa - 0.1 soniyada yuboradi)
     if clean_query in audio_cache:
         cached_data = audio_cache[clean_query]
         caption_text = f"🎧 **{cached_data['title']}**\n⚡️ _(Tezkor keshdan yuborildi)_"
-        await message_obj.reply_audio(
-            audio=cached_data['file_id'],
-            caption=caption_text,
-            parse_mode="Markdown"
-        )
-        return
+        try:
+            await message_obj.reply_audio(
+                audio=cached_data['file_id'],
+                caption=caption_text,
+                parse_mode="Markdown"
+            )
+            return
+        except Exception:
+            del audio_cache[clean_query]
 
     status_msg = await message_obj.reply_text(TEXTS[lang]['search'].format(query), parse_mode="Markdown")
 
-    # 2. TEZKOR OPTIMIZATSIYA QILINGAN YT-DLP SOZLAMALARI
     ydl_opts = {
         'format': 'bestaudio/best',
-        'default_search': 'ytsearch1', # 3 ta emas 1 ta eng aniqini tezkor qidiradi
+        'default_search': 'scsearch1',
         'outtmpl': 'downloads/%(id)s.%(ext)s',
         'quiet': True,
         'noplaylist': True,
-        'concurrent_fragment_downloads': 10,
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '128', # 192 mas 128 (fayl hajmi kichikroq, yuklash 2 baravar tezroq)
-        }],
     }
 
     try:
@@ -229,21 +227,23 @@ async def download_and_send(message_obj, query, user_id):
                 return
 
             entries = info.get('entries', [info])
-            primary_entry = entries[0]
+            if not entries:
+                await status_msg.edit_text(TEXTS[lang]['not_found'])
+                return
 
-            file_path = f"downloads/{primary_entry['id']}.mp3"
+            primary_entry = entries[0]
+            filename = ydl.prepare_filename(primary_entry)
             title = primary_entry.get('title', 'Musiqa')
 
-        if file_path and os.path.exists(file_path):
+        if filename and os.path.exists(filename):
             await status_msg.edit_text(TEXTS[lang]['sending'])
             caption_text = f"🎧 **{title}**"
 
-            with open(file_path, 'rb') as audio:
+            with open(filename, 'rb') as audio:
                 sent_message = await message_obj.reply_audio(
                     audio=audio, title=title, caption=caption_text, parse_mode="Markdown"
                 )
                 
-                # File ID ni keshga saqlaymiz
                 file_id = sent_message.audio.file_id
                 audio_cache[clean_query] = {
                     'file_id': file_id,
@@ -252,7 +252,8 @@ async def download_and_send(message_obj, query, user_id):
                 save_data(CACHE_FILE, audio_cache)
 
             await status_msg.delete()
-            os.remove(file_path)
+            if os.path.exists(filename):
+                os.remove(filename)
         else:
             await status_msg.edit_text(TEXTS[lang]['not_found'])
 
@@ -267,15 +268,40 @@ async def search_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     search_query = query.data.replace("search_", "")
     await download_and_send(query.message, search_query, query.from_user.id)
 
-# ----------------- ADMIN PANEL -----------------
+# ----------------- PAROL O'CHIRILADIGAN ADMIN PANEL -----------------
 
 async def ask_admin_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return ConversationHandler.END
-    await update.message.reply_text("🔑 **Admin panelga kirish uchun parolni kiriting:**")
+    
+    # Buyruq xabarini o'chirish (ixtiyoriy)
+    try: await update.message.delete()
+    except Exception: pass
+
+    msg = await context.bot.send_message(
+        chat_id=update.effective_user.id,
+        text="🔑 **Admin panelga kirish uchun parolni kiriting:**"
+    )
+    context.user_data['prompt_msg_id'] = msg.message_id
     return AUTH_STATE
 
 async def verify_admin_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return ConversationHandler.END
+
+    # Foydalanuvchi yozgan PAROL XABARINI DARHOL O'CHIRISH
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    # Bot bergan savol xabarini o'chirish
+    if 'prompt_msg_id' in context.user_data:
+        try:
+            await context.bot.delete_message(
+                chat_id=update.effective_user.id,
+                message_id=context.user_data['prompt_msg_id']
+            )
+        except Exception:
+            pass
 
     if update.message.text.strip() == ADMIN_PASSWORD:
         keyboard = [
@@ -285,10 +311,18 @@ async def verify_admin_password(update: Update, context: ContextTypes.DEFAULT_TY
             [InlineKeyboardButton("✅ Blokdan chiqarish", callback_data="admin_unban")],
             [InlineKeyboardButton("📢 Ommaviy xabar yuborish", callback_data="admin_broadcast")]
         ]
-        await update.message.reply_text("🔓 **Parol to'g'ri! Admin Panel:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await context.bot.send_message(
+            chat_id=update.effective_user.id,
+            text="🔓 **Parol to'g'ri! Admin Panel:**",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
         return ConversationHandler.END
     else:
-        await update.message.reply_text("❌ **Parol noto'g'ri!** Kirish rad etildi.")
+        await context.bot.send_message(
+            chat_id=update.effective_user.id,
+            text="❌ **Parol noto'g'ri!** Kirish rad etildi."
+        )
         return ConversationHandler.END
 
 async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
