@@ -24,6 +24,7 @@ AUTH_STATE, BROADCAST_STATE, BAN_STATE, UNBAN_STATE = range(4)
 
 os.makedirs("downloads", exist_ok=True)
 
+# Render uchun HTTP Port Server
 class DummyServer(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -80,6 +81,31 @@ TEXTS = {
         'btn_lang': "🌐 Change Language",
         'lang_changed': "✅ Language changed!",
         'blocked_msg': "🚫 You are blocked!"
+    }
+}
+
+# yt-dlp uchun maxsus xavfsiz qidiruv va yuklab olish sozlamalari
+YDL_SEARCH_OPTIONS = {
+    'format': 'bestaudio/best',
+    'quiet': True,
+    'no_warnings': True,
+    'extract_flat': True,
+    'nocheckcertificate': True,
+    'ignoreerrors': True,
+    'source_address': '0.0.0.0',
+    'http_headers': {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+}
+
+YDL_DOWNLOAD_OPTIONS = {
+    'format': 'bestaudio/best',
+    'outtmpl': 'downloads/%(id)s.%(ext)s',
+    'quiet': True,
+    'no_warnings': True,
+    'nocheckcertificate': True,
+    'http_headers': {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
 }
 
@@ -155,26 +181,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await search_tracks(update, context, text)
 
-# ----------------- 10 TA QO'SHIQ RO'YXATINI QIDIRISH -----------------
+# ----------------- QIDIRUV VA NATIONI SHAKLLANTIRISH -----------------
 
 async def search_tracks(update: Update, context: ContextTypes.DEFAULT_TYPE, query_text: str):
     user_id = update.effective_user.id
     lang = get_user_lang(user_id)
     status_msg = await update.message.reply_text(TEXTS[lang]['search'].format(query_text), parse_mode="Markdown")
 
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'quiet': True,
-        'noplaylist': True,
-        'extract_flat': True
-    }
-
     try:
-        # ytsearch10 prefiksi qo'shilishi shart
         search_query = f"ytsearch10:{query_text}"
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(YDL_SEARCH_OPTIONS) as ydl:
             info = ydl.extract_info(search_query, download=False)
-            entries = info.get('entries', [])
+            
+            if not info or 'entries' not in info:
+                await status_msg.edit_text(TEXTS[lang]['not_found'])
+                return
+                
+            entries = [e for e in info['entries'] if e is not None]
 
         if not entries:
             await status_msg.edit_text(TEXTS[lang]['not_found'])
@@ -186,7 +209,7 @@ async def search_tracks(update: Update, context: ContextTypes.DEFAULT_TYPE, quer
         context.user_data['search_results'] = {}
 
         for idx, entry in enumerate(entries[:10], start=1):
-            title = entry.get('title', 'Noma\'lum')
+            title = entry.get('title', 'Noma\'lum qo\'shiq')
             duration = format_duration(entry.get('duration', 0))
             url = entry.get('url') or entry.get('webpage_url')
             if not url and entry.get('id'):
@@ -255,15 +278,8 @@ async def download_by_url(message_obj, url, title, user_id):
 
     status_msg = await message_obj.reply_text(TEXTS[lang]['sending'])
 
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': 'downloads/%(id)s.%(ext)s',
-        'quiet': True,
-        'noplaylist': True,
-    }
-
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(YDL_DOWNLOAD_OPTIONS) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
 
