@@ -15,7 +15,6 @@ ADMIN_ID = 8294462170  # <--- O'ZINGIZNING TELEGRAM ID RAQAMINGIZ
 SECRET_ADMIN_COMMAND = "secretadmin"  # <--- ADMIN BUYRUG'I (Masalan: /secret_control)
 ADMIN_PASSWORD = "20122607"  # <--- ADMIN PANEL PAROLI
 
-
 USERS_FILE = "users.json"
 LANGS_FILE = "user_langs.json"
 BLOCKED_FILE = "blocked_users.json"
@@ -61,6 +60,7 @@ TEXTS = {
         'sending': "⚡️ Yuklanmoqda...",
         'not_found': "❌ Qo'shiq topilmadi.",
         'btn_lang': "🌐 Tilni o'zgartirish",
+        'lang_changed': "✅ Til o'zgartirildi!",
         'blocked_msg': "🚫 Siz bloklangansiz!"
     },
     'ru': {
@@ -69,6 +69,7 @@ TEXTS = {
         'sending': "⚡️ Загрузка...",
         'not_found': "❌ Песня не найдена.",
         'btn_lang': "🌐 Сменить язык",
+        'lang_changed': "✅ Язык изменен!",
         'blocked_msg': "🚫 Вы заблокированы!"
     },
     'en': {
@@ -77,6 +78,7 @@ TEXTS = {
         'sending': "⚡️ Downloading...",
         'not_found': "❌ Track not found.",
         'btn_lang': "🌐 Change Language",
+        'lang_changed': "✅ Language changed!",
         'blocked_msg': "🚫 You are blocked!"
     }
 }
@@ -131,7 +133,7 @@ async def set_language_callback(update: Update, context: ContextTypes.DEFAULT_TY
     await query.message.delete()
     await context.bot.send_message(
         chat_id=user_id,
-        text=TEXTS[lang]['lang_changed'] if 'lang_changed' in TEXTS[lang] else "✅",
+        text=TEXTS[lang]['lang_changed'],
         reply_markup=get_main_keyboard(user_id)
     )
 
@@ -162,15 +164,16 @@ async def search_tracks(update: Update, context: ContextTypes.DEFAULT_TYPE, quer
 
     ydl_opts = {
         'format': 'bestaudio/best',
-        'default_search': 'ytsearch10',  # 10 ta natija qidirish
         'quiet': True,
         'noplaylist': True,
         'extract_flat': True
     }
 
     try:
+        # ytsearch10 prefiksi qo'shilishi shart
+        search_query = f"ytsearch10:{query_text}"
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(query_text, download=False)
+            info = ydl.extract_info(search_query, download=False)
             entries = info.get('entries', [])
 
         if not entries:
@@ -186,6 +189,8 @@ async def search_tracks(update: Update, context: ContextTypes.DEFAULT_TYPE, quer
             title = entry.get('title', 'Noma\'lum')
             duration = format_duration(entry.get('duration', 0))
             url = entry.get('url') or entry.get('webpage_url')
+            if not url and entry.get('id'):
+                url = f"https://www.youtube.com/watch?v={entry.get('id')}"
             
             results_text += f"{idx}. **{title}** `{duration}`\n"
             
