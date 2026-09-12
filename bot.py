@@ -24,7 +24,6 @@ AUTH_STATE, BROADCAST_STATE, BAN_STATE, UNBAN_STATE = range(4)
 
 os.makedirs("downloads", exist_ok=True)
 
-# Render uchun HTTP Port Server
 class DummyServer(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -84,20 +83,22 @@ TEXTS = {
     }
 }
 
-# yt-dlp xavfsiz qidiruv va blokirovkaga qarshi parametrlar
-YDL_SEARCH_OPTIONS = {
-    'format': 'bestaudio/best',
+# YouTube va YouTube Music bloklariga qarshi optimallashtirilgan parametrlar
+YDL_BASE_OPTS = {
     'quiet': True,
     'no_warnings': True,
-    'extract_flat': True,
     'nocheckcertificate': True,
     'ignoreerrors': True,
     'geo_bypass': True,
-    'source_address': '0.0.0.0',
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['ios', 'android', 'mweb'],
+            'skip': ['dash', 'hls']
+        }
+    },
     'http_headers': {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5'
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+        'Accept-Language': 'en-US,en;q=0.9'
     }
 }
 
@@ -180,9 +181,15 @@ async def search_tracks(update: Update, context: ContextTypes.DEFAULT_TYPE, quer
     lang = get_user_lang(user_id)
     status_msg = await update.message.reply_text(TEXTS[lang]['search'].format(query_text), parse_mode="Markdown")
 
+    search_opts = {
+        **YDL_BASE_OPTS,
+        'extract_flat': True,
+        'format': 'bestaudio/best'
+    }
+
     try:
         search_query = f"ytsearch10:{query_text}"
-        with yt_dlp.YoutubeDL(YDL_SEARCH_OPTIONS) as ydl:
+        with yt_dlp.YoutubeDL(search_opts) as ydl:
             info = ydl.extract_info(search_query, download=False)
             
             if not info or 'entries' not in info:
@@ -198,23 +205,19 @@ async def search_tracks(update: Update, context: ContextTypes.DEFAULT_TYPE, quer
         results_text = f"🔍 **{query_text}**\n\n"
         keyboard = []
         row = []
-        context.user_data['search_results'] = {}
 
         for idx, entry in enumerate(entries[:10], start=1):
             title = entry.get('title', 'Noma\'lum qo\'shiq')
             duration = format_duration(entry.get('duration', 0))
-            url = entry.get('url') or entry.get('webpage_url')
-            if not url and entry.get('id'):
-                url = f"https://www.youtube.com/watch?v={entry.get('id')}"
+            video_id = entry.get('id')
             
+            if not video_id:
+                continue
+
             results_text += f"{idx}. **{title}** `{duration}`\n"
             
-            context.user_data['search_results'][str(idx)] = {
-                'url': url,
-                'title': title
-            }
-            
-            row.append(InlineKeyboardButton(str(idx), callback_data=f"select_{idx}"))
+            # Video ID ning o'zi tugma ma'lumotiga (callback_data) biriktiriladi
+            row.append(InlineKeyboardButton(str(idx), callback_data=f"get_{video_id}"))
             if len(row) == 5:
                 keyboard.append(row)
                 row = []
@@ -242,19 +245,12 @@ async def track_select_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await query.message.delete()
         return
 
-    idx_str = query.data.replace("select_", "")
-    search_data = context.user_data.get('search_results', {}).get(idx_str)
-
-    if not search_data:
-        await query.message.reply_text("❌ Natija muddati o'tgan, qayta qidirib ko'ring.")
-        return
-
-    track_url = search_data['url']
-    track_title = search_data['title']
+    video_id = query.data.replace("get_", "")
+    track_url = f"https://www.youtube.com/watch?v={video_id}"
     
-    await download_by_url(query.message, track_url, track_title, query.from_user.id)
+    await download_by_url(query.message, track_url, query.from_user.id)
 
-async def download_by_url(message_obj, url, title, user_id):
+async def download_by_url(message_obj, url, user_id):
     lang = get_user_lang(user_id)
     
     if url in audio_cache:
@@ -270,25 +266,17 @@ async def download_by_url(message_obj, url, title, user_id):
 
     status_msg = await message_obj.reply_text(TEXTS[lang]['sending'])
 
-    ydl_opts = {
-        'format': 'bestaudio/best',
+    download_opts = {
+        **YDL_BASE_OPTS,
+        'format': 'm4a/bestaudio/best',
         'outtmpl': 'downloads/%(id)s.%(ext)s',
-        'quiet': True,
-        'no_warnings': True,
-        'nocheckcertificate': True,
-        'ignoreerrors': False,
-        'geo_bypass': True,
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5'
-        }
     }
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(download_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
+            title = info.get('title', 'Audio Track')
 
         if filename and os.path.exists(filename):
             with open(filename, 'rb') as audio:
@@ -312,7 +300,7 @@ async def download_by_url(message_obj, url, title, user_id):
             await status_msg.edit_text(TEXTS[lang]['not_found'])
 
     except Exception as e:
-        print(f"Download Error Details: {e}")
+        print(f"Download Error: {e}")
         await status_msg.edit_text(TEXTS[lang]['not_found'])
 
 # ----------------- ADMIN PANEL -----------------
@@ -456,7 +444,7 @@ def main():
     app.add_handler(admin_dialog)
     
     app.add_handler(CallbackQueryHandler(set_language_callback, pattern="^set_lang_"))
-    app.add_handler(CallbackQueryHandler(track_select_callback, pattern="^(select_|cancel_search)"))
+    app.add_handler(CallbackQueryHandler(track_select_callback, pattern="^(get_|cancel_search)"))
     app.add_handler(CallbackQueryHandler(admin_callback))
     
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
