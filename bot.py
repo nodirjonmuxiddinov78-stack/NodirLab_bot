@@ -83,22 +83,15 @@ TEXTS = {
     }
 }
 
-# YouTube va YouTube Music bloklariga qarshi optimallashtirilgan parametrlar
+# General yt-dlp options optimized to prevent blocking
 YDL_BASE_OPTS = {
     'quiet': True,
     'no_warnings': True,
     'nocheckcertificate': True,
     'ignoreerrors': True,
     'geo_bypass': True,
-    'extractor_args': {
-        'youtube': {
-            'player_client': ['ios', 'android', 'mweb'],
-            'skip': ['dash', 'hls']
-        }
-    },
     'http_headers': {
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-        'Accept-Language': 'en-US,en;q=0.9'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
 }
 
@@ -188,15 +181,24 @@ async def search_tracks(update: Update, context: ContextTypes.DEFAULT_TYPE, quer
     }
 
     try:
-        search_query = f"ytsearch10:{query_text}"
+        # Render IP larida qolipsiz ishlashi uchun SoundCloud qidiruvidan foydalaniladi
+        search_query = f"scsearch10:{query_text}"
         with yt_dlp.YoutubeDL(search_opts) as ydl:
             info = ydl.extract_info(search_query, download=False)
-            
-            if not info or 'entries' not in info:
-                await status_msg.edit_text(TEXTS[lang]['not_found'])
-                return
-                
-            entries = [e for e in info['entries'] if e is not None]
+            entries = info.get('entries', []) if info else []
+
+        # Agar SoundCloud natija bermasa, zaxira sifatida YouTube Music bo'yicha harakat qiladi
+        if not entries:
+            search_query = f"ytsearch10:{query_text}"
+            yt_opts = {
+                **search_opts,
+                'extractor_args': {'youtube': {'player_client': ['ios', 'mweb']}}
+            }
+            with yt_dlp.YoutubeDL(yt_opts) as ydl:
+                info = ydl.extract_info(search_query, download=False)
+                entries = info.get('entries', []) if info else []
+
+        entries = [e for e in entries if e is not None]
 
         if not entries:
             await status_msg.edit_text(TEXTS[lang]['not_found'])
@@ -206,18 +208,23 @@ async def search_tracks(update: Update, context: ContextTypes.DEFAULT_TYPE, quer
         keyboard = []
         row = []
 
+        context.user_data['temp_results'] = {}
+
         for idx, entry in enumerate(entries[:10], start=1):
             title = entry.get('title', 'Noma\'lum qo\'shiq')
             duration = format_duration(entry.get('duration', 0))
-            video_id = entry.get('id')
+            url = entry.get('url') or entry.get('webpage_url')
             
-            if not video_id:
+            if not url and entry.get('id'):
+                url = f"https://www.youtube.com/watch?v={entry.get('id')}"
+
+            if not url:
                 continue
 
             results_text += f"{idx}. **{title}** `{duration}`\n"
+            context.user_data['temp_results'][str(idx)] = {'url': url, 'title': title}
             
-            # Video ID ning o'zi tugma ma'lumotiga (callback_data) biriktiriladi
-            row.append(InlineKeyboardButton(str(idx), callback_data=f"get_{video_id}"))
+            row.append(InlineKeyboardButton(str(idx), callback_data=f"sel_{idx}"))
             if len(row) == 5:
                 keyboard.append(row)
                 row = []
@@ -245,12 +252,16 @@ async def track_select_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await query.message.delete()
         return
 
-    video_id = query.data.replace("get_", "")
-    track_url = f"https://www.youtube.com/watch?v={video_id}"
-    
-    await download_by_url(query.message, track_url, query.from_user.id)
+    idx = query.data.replace("sel_", "")
+    item = context.user_data.get('temp_results', {}).get(idx)
 
-async def download_by_url(message_obj, url, user_id):
+    if not item:
+        await query.message.reply_text("❌ Natija topilmadi, qayta qidirib ko'ring.")
+        return
+
+    await download_by_url(query.message, item['url'], item['title'], query.from_user.id)
+
+async def download_by_url(message_obj, url, title, user_id):
     lang = get_user_lang(user_id)
     
     if url in audio_cache:
@@ -268,7 +279,7 @@ async def download_by_url(message_obj, url, user_id):
 
     download_opts = {
         **YDL_BASE_OPTS,
-        'format': 'm4a/bestaudio/best',
+        'format': 'bestaudio/best',
         'outtmpl': 'downloads/%(id)s.%(ext)s',
     }
 
@@ -276,20 +287,20 @@ async def download_by_url(message_obj, url, user_id):
         with yt_dlp.YoutubeDL(download_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
-            title = info.get('title', 'Audio Track')
+            track_title = info.get('title', title)
 
         if filename and os.path.exists(filename):
             with open(filename, 'rb') as audio:
                 sent_msg = await message_obj.reply_audio(
                     audio=audio,
-                    title=title,
-                    caption=f"🎧 **{title}**",
+                    title=track_title,
+                    caption=f"🎧 **{track_title}**",
                     parse_mode="Markdown"
                 )
                 
                 audio_cache[url] = {
                     'file_id': sent_msg.audio.file_id,
-                    'title': title
+                    'title': track_title
                 }
                 save_data(CACHE_FILE, audio_cache)
 
@@ -444,7 +455,7 @@ def main():
     app.add_handler(admin_dialog)
     
     app.add_handler(CallbackQueryHandler(set_language_callback, pattern="^set_lang_"))
-    app.add_handler(CallbackQueryHandler(track_select_callback, pattern="^(get_|cancel_search)"))
+    app.add_handler(CallbackQueryHandler(track_select_callback, pattern="^(sel_|cancel_search)"))
     app.add_handler(CallbackQueryHandler(admin_callback))
     
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
