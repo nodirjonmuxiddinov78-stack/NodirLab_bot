@@ -84,7 +84,7 @@ TEXTS = {
     }
 }
 
-# yt-dlp uchun maxsus xavfsiz qidiruv va yuklab olish sozlamalari
+# yt-dlp xavfsiz qidiruv va blokirovkaga qarshi parametrlar
 YDL_SEARCH_OPTIONS = {
     'format': 'bestaudio/best',
     'quiet': True,
@@ -92,20 +92,12 @@ YDL_SEARCH_OPTIONS = {
     'extract_flat': True,
     'nocheckcertificate': True,
     'ignoreerrors': True,
+    'geo_bypass': True,
     'source_address': '0.0.0.0',
     'http_headers': {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
-}
-
-YDL_DOWNLOAD_OPTIONS = {
-    'format': 'bestaudio/best',
-    'outtmpl': 'downloads/%(id)s.%(ext)s',
-    'quiet': True,
-    'no_warnings': True,
-    'nocheckcertificate': True,
-    'http_headers': {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5'
     }
 }
 
@@ -181,7 +173,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await search_tracks(update, context, text)
 
-# ----------------- QIDIRUV VA NATIONI SHAKLLANTIRISH -----------------
+# ----------------- QIDIRUV VA YUKLAB OLISH -----------------
 
 async def search_tracks(update: Update, context: ContextTypes.DEFAULT_TYPE, query_text: str):
     user_id = update.effective_user.id
@@ -278,8 +270,23 @@ async def download_by_url(message_obj, url, title, user_id):
 
     status_msg = await message_obj.reply_text(TEXTS[lang]['sending'])
 
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': 'downloads/%(id)s.%(ext)s',
+        'quiet': True,
+        'no_warnings': True,
+        'nocheckcertificate': True,
+        'ignoreerrors': False,
+        'geo_bypass': True,
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5'
+        }
+    }
+
     try:
-        with yt_dlp.YoutubeDL(YDL_DOWNLOAD_OPTIONS) as ydl:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
 
@@ -305,7 +312,7 @@ async def download_by_url(message_obj, url, title, user_id):
             await status_msg.edit_text(TEXTS[lang]['not_found'])
 
     except Exception as e:
-        print(f"Download Error: {e}")
+        print(f"Download Error Details: {e}")
         await status_msg.edit_text(TEXTS[lang]['not_found'])
 
 # ----------------- ADMIN PANEL -----------------
