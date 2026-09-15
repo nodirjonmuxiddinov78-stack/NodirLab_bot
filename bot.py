@@ -3,8 +3,7 @@ import json
 import threading
 import math
 from http.server import HTTPServer, BaseHTTPRequestHandler
-import requests
-from vkmusic import VKMusic
+import aiohttp
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
@@ -22,9 +21,6 @@ BLOCKED_FILE = "blocked_users.json"
 CACHE_FILE = "audio_cache.json"
 
 AUTH_STATE, BROADCAST_STATE, BAN_STATE, UNBAN_STATE = range(4)
-
-os.makedirs("downloads", exist_ok=True)
-vk = VKMusic()
 
 class DummyServer(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -59,7 +55,7 @@ TEXTS = {
     'uz': {
         'start': "Assalomu alaykum! Qo'shiq nomini yoki ijrochini yozing:",
         'search': "🔍 `{}` bo'yicha qidirilmoqda...",
-        'sending': "⚡️ To'liq MP3 yuklanmoqda...",
+        'sending': "⚡️ MP3 yuklanmoqda...",
         'not_found': "❌ Qo'shiq topilmadi.",
         'btn_lang': "🌐 Tilni o'zgartirish",
         'lang_changed': "✅ Til o'zgartirildi!",
@@ -68,7 +64,7 @@ TEXTS = {
     'ru': {
         'start': "Здравствуйте! Введите название песни или исполнителя:",
         'search': "🔍 Поиск по запросу `{}`...",
-        'sending': "⚡️ Загрузка полной версии MP3...",
+        'sending': "⚡️ Загрузка MP3...",
         'not_found': "❌ Песня не найдена.",
         'btn_lang': "🌐 Сменить язык",
         'lang_changed': "✅ Язык изменен!",
@@ -77,7 +73,7 @@ TEXTS = {
     'en': {
         'start': "Hello! Send the music title or artist name:",
         'search': "🔍 Searching for `{}`...",
-        'sending': "⚡️ Downloading full MP3...",
+        'sending': "⚡️ Downloading MP3...",
         'not_found': "❌ Track not found.",
         'btn_lang': "🌐 Change Language",
         'lang_changed': "✅ Language changed!",
@@ -96,8 +92,9 @@ def get_main_keyboard(user_id):
 def is_blocked(user_id):
     return user_id in blocked_users
 
-def format_duration(seconds):
-    if not seconds: return "0:00"
+def format_duration(ms):
+    if not ms: return "0:00"
+    seconds = int(ms / 1000)
     m = math.floor(seconds / 60)
     s = int(seconds % 60)
     return f"{m}:{s:02d}"
@@ -157,54 +154,77 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await search_tracks(update, context, text)
 
-# ----------------- VK MUSIC BILAN QIDIRISH VA YUKLASH -----------------
+# ----------------- RASMIY VA BLOKLANMAYDIGAN OCHIQ API -----------------
 
 async def search_tracks(update: Update, context: ContextTypes.DEFAULT_TYPE, query_text: str):
     user_id = update.effective_user.id
     lang = get_user_lang(user_id)
     status_msg = await update.message.reply_text(TEXTS[lang]['search'].format(query_text), parse_mode="Markdown")
 
-    try:
-        results = vk.search(query_text, count=10)
-        if not results:
-            await status_msg.edit_text(TEXTS[lang]['not_found'])
-            return
+    tracks = []
+    async with aiohttp.ClientSession() as session:
+        # 1. iTunes API orqali qidiruv
+        try:
+            itunes_url = f"https://itunes.apple.com/search?term={query_text}&entity=song&limit=10"
+            async with session.get(itunes_url, timeout=5) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    for item in data.get('results', []):
+                        tracks.append({
+                            'id': str(item.get('trackId')),
+                            'title': f"{item.get('artistName')} - {item.get('trackName')}",
+                            'duration': format_duration(item.get('trackTimeMillis', 0)),
+                            'url': item.get('previewUrl')
+                        })
+        except Exception:
+            pass
 
-        results_text = f"🔍 **{query_text}**\n\n"
-        keyboard = []
-        row = []
+        # 2. Zaxira: Jamendo API
+        if not tracks:
+            try:
+                jamendo_url = f"https://api.jamendo.com/v3.0/tracks/?client_id=56d30262&format=json&limit=10&search={query_text}"
+                async with session.get(jamendo_url, timeout=5) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        for item in data.get('results', []):
+                            tracks.append({
+                                'id': str(item.get('id')),
+                                'title': f"{item.get('artist_name')} - {item.get('name')}",
+                                'duration': format_duration(item.get('duration', 0) * 1000),
+                                'url': item.get('audio')
+                            })
+            except Exception:
+                pass
 
-        context.user_data['search_results'] = {}
-
-        for idx, track in enumerate(results, start=1):
-            title = f"{track.artist} - {track.title}"
-            duration = format_duration(track.duration)
-            
-            results_text += f"{idx}. **{title}** `{duration}`\n"
-            context.user_data['search_results'][str(idx)] = {
-                'url': track.url,
-                'title': title
-            }
-
-            row.append(InlineKeyboardButton(str(idx), callback_data=f"vk_{idx}"))
-            if len(row) == 5:
-                keyboard.append(row)
-                row = []
-        if row:
-            keyboard.append(row)
-
-        keyboard.append([InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_search")])
-
-        await status_msg.edit_text(
-            results_text,
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown",
-            disable_web_page_preview=True
-        )
-
-    except Exception as e:
-        print(f"VK Search Error: {e}")
+    if not tracks:
         await status_msg.edit_text(TEXTS[lang]['not_found'])
+        return
+
+    results_text = f"🔍 **{query_text}**\n\n"
+    keyboard = []
+    row = []
+
+    context.user_data['search_results'] = {}
+
+    for idx, item in enumerate(tracks, start=1):
+        results_text += f"{idx}. **{item['title']}** `{item['duration']}`\n"
+        context.user_data['search_results'][str(idx)] = item
+
+        row.append(InlineKeyboardButton(str(idx), callback_data=f"music_{idx}"))
+        if len(row) == 5:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+
+    keyboard.append([InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_search")])
+
+    await status_msg.edit_text(
+        results_text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown",
+        disable_web_page_preview=True
+    )
 
 async def track_select_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -214,54 +234,55 @@ async def track_select_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await query.message.delete()
         return
 
-    idx = query.data.replace("vk_", "")
+    idx = query.data.replace("music_", "")
     item = context.user_data.get('search_results', {}).get(idx)
 
     if not item:
         await query.message.reply_text("❌ Qo'shiq topilmadi, qayta qidiring.")
         return
 
-    await download_and_send(query.message, item['url'], item['title'], query.from_user.id)
+    await download_and_send(query.message, item, query.from_user.id)
 
-async def download_and_send(message_obj, download_url, title, user_id):
+async def download_and_send(message_obj, item, user_id):
     lang = get_user_lang(user_id)
+    track_id = item['id']
+    title = item['title']
+    download_url = item['url']
 
-    # Keshni tekshirish
-    cache_key = str(hash(download_url))
-    if cache_key in audio_cache:
+    if track_id in audio_cache:
         try:
             await message_obj.reply_audio(
-                audio=audio_cache[cache_key]['file_id'],
-                caption=f"🎧 **{audio_cache[cache_key]['title']}**",
+                audio=audio_cache[track_id]['file_id'],
+                caption=f"🎧 **{audio_cache[track_id]['title']}**",
                 parse_mode="Markdown"
             )
             return
         except Exception:
-            del audio_cache[cache_key]
+            del audio_cache[track_id]
 
     status_msg = await message_obj.reply_text(TEXTS[lang]['sending'])
 
     try:
-        res = requests.get(download_url, timeout=15)
-        if res.status_code == 200:
-            audio_data = res.content
-            sent_msg = await message_obj.reply_audio(
-                audio=audio_data,
-                filename=f"{title}.mp3",
-                title=title,
-                caption=f"🎧 **{title}**",
-                parse_mode="Markdown"
-            )
+        async with aiohttp.ClientSession() as session:
+            async with session.get(download_url, timeout=15) as resp:
+                if resp.status == 200:
+                    audio_data = await resp.read()
+                    sent_msg = await message_obj.reply_audio(
+                        audio=audio_data,
+                        filename=f"{title}.mp3",
+                        title=title,
+                        caption=f"🎧 **{title}**",
+                        parse_mode="Markdown"
+                    )
 
-            audio_cache[cache_key] = {
-                'file_id': sent_msg.audio.file_id,
-                'title': title
-            }
-            save_data(CACHE_FILE, audio_cache)
-            await status_msg.delete()
-        else:
-            await status_msg.edit_text(TEXTS[lang]['not_found'])
-
+                    audio_cache[track_id] = {
+                        'file_id': sent_msg.audio.file_id,
+                        'title': title
+                    }
+                    save_data(CACHE_FILE, audio_cache)
+                    await status_msg.delete()
+                else:
+                    await status_msg.edit_text(TEXTS[lang]['not_found'])
     except Exception as e:
         print(f"Download Error: {e}")
         await status_msg.edit_text(TEXTS[lang]['not_found'])
@@ -407,7 +428,7 @@ def main():
     app.add_handler(admin_dialog)
     
     app.add_handler(CallbackQueryHandler(set_language_callback, pattern="^set_lang_"))
-    app.add_handler(CallbackQueryHandler(track_select_callback, pattern="^(vk_|cancel_search)"))
+    app.add_handler(CallbackQueryHandler(track_select_callback, pattern="^(music_|cancel_search)"))
     app.add_handler(CallbackQueryHandler(admin_callback))
     
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
