@@ -3,7 +3,7 @@ import json
 import threading
 import math
 from http.server import HTTPServer, BaseHTTPRequestHandler
-import yt_dlp
+import aiohttp
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
@@ -83,26 +83,12 @@ TEXTS = {
     }
 }
 
-# YouTube va Cloud hosting bloklarini chetlab o'tish uchun maxsus sozlamalar
-YDL_OPTIONS = {
-    'quiet': True,
-    'no_warnings': True,
-    'nocheckcertificate': True,
-    'ignoreerrors': True,
-    'geo_bypass': True,
-    'format': 'bestaudio[ext=m4a]/bestaudio/best',
-    'outtmpl': 'downloads/%(id)s.%(ext)s',
-    'extractor_args': {
-        'youtube': {
-            'player_client': ['ios', 'android', 'web_embedded'],
-            'player_skip': ['webpage', 'configs']
-        }
-    },
-    'http_headers': {
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-        'Accept-Language': 'en-US,en;q=0.9'
-    }
-}
+INVIDIOUS_INSTANCES = [
+    "https://inv.tux.im",
+    "https://invidious.nerdvpn.de",
+    "https://invidious.drgns.space",
+    "https://yt.drgnz.club"
+]
 
 def get_user_lang(user_id):
     return user_langs.get(str(user_id), 'uz')
@@ -176,69 +162,70 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await search_tracks(update, context, text)
 
-# ----------------- TO'LIQ QO'SHIQLARNI QIDIRISH VA YUKLASH -----------------
+# ----------------- INVIDIOUS API BILAN ISHLASH -----------------
 
 async def search_tracks(update: Update, context: ContextTypes.DEFAULT_TYPE, query_text: str):
     user_id = update.effective_user.id
     lang = get_user_lang(user_id)
     status_msg = await update.message.reply_text(TEXTS[lang]['search'].format(query_text), parse_mode="Markdown")
 
-    search_opts = {
-        **YDL_OPTIONS,
-        'extract_flat': True,
-    }
-
-    try:
-        search_query = f"ytsearch10:{query_text} audio"
-        with yt_dlp.YoutubeDL(search_opts) as ydl:
-            info = ydl.extract_info(search_query, download=False)
-            entries = info.get('entries', []) if info else []
-
-        entries = [e for e in entries if e is not None]
-
-        if not entries:
-            await status_msg.edit_text(TEXTS[lang]['not_found'])
-            return
-
-        results_text = f"🔍 **{query_text}**\n\n"
-        keyboard = []
-        row = []
-
-        context.user_data['search_results'] = {}
-
-        for idx, entry in enumerate(entries[:10], start=1):
-            title = entry.get('title', 'Noma\'lum qo\'shiq')
-            duration = format_duration(entry.get('duration', 0))
-            video_id = entry.get('id')
-
-            if not video_id:
+    entries = []
+    async with aiohttp.ClientSession() as session:
+        for instance in INVIDIOUS_INSTANCES:
+            try:
+                url = f"{instance}/api/v1/search?q={query_text}&type=video"
+                async with session.get(url, timeout=5) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data:
+                            entries = data
+                            break
+            except Exception:
                 continue
 
-            results_text += f"{idx}. **{title}** `{duration}`\n"
-            context.user_data['search_results'][str(idx)] = {
-                'id': video_id,
-                'title': title
-            }
-
-            row.append(InlineKeyboardButton(str(idx), callback_data=f"yt_{idx}"))
-            if len(row) == 5:
-                keyboard.append(row)
-                row = []
-        if row:
-            keyboard.append(row)
-
-        keyboard.append([InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_search")])
-
-        await status_msg.edit_text(
-            results_text,
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown",
-            disable_web_page_preview=True
-        )
-
-    except Exception as e:
-        print(f"Search Error: {e}")
+    if not entries:
         await status_msg.edit_text(TEXTS[lang]['not_found'])
+        return
+
+    results_text = f"🔍 **{query_text}**\n\n"
+    keyboard = []
+    row = []
+
+    context.user_data['search_results'] = {}
+
+    count = 1
+    for item in entries:
+        if count > 10: break
+        title = item.get('title', 'Noma\'lum qo\'shiq')
+        duration = format_duration(item.get('lengthSeconds', 0))
+        video_id = item.get('videoId')
+
+        if not video_id:
+            continue
+
+        results_text += f"{count}. **{title}** `{duration}`\n"
+        context.user_data['search_results'][str(count)] = {
+            'id': video_id,
+            'title': title
+        }
+
+        row.append(InlineKeyboardButton(str(count), callback_data=f"yt_{count}"))
+        if len(row) == 5:
+            keyboard.append(row)
+            row = []
+        count += 1
+
+    if row:
+        keyboard.append(row)
+
+    keyboard.append([InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_search")])
+
+    await status_msg.edit_text(
+        results_text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown",
+        disable_web_page_preview=True
+    )
 
 async def track_select_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -257,52 +244,66 @@ async def track_select_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     await download_and_send(query.message, item['id'], item['title'], query.from_user.id)
 
-async def download_and_send(message_obj, video_id, fallback_title, user_id):
+async def download_and_send(message_obj, video_id, title, user_id):
     lang = get_user_lang(user_id)
-    url = f"https://www.youtube.com/watch?v={video_id}"
 
-    if url in audio_cache:
+    if video_id in audio_cache:
         try:
             await message_obj.reply_audio(
-                audio=audio_cache[url]['file_id'],
-                caption=f"🎧 **{audio_cache[url]['title']}**",
+                audio=audio_cache[video_id]['file_id'],
+                caption=f"🎧 **{audio_cache[video_id]['title']}**",
                 parse_mode="Markdown"
             )
             return
         except Exception:
-            del audio_cache[url]
+            del audio_cache[video_id]
 
     status_msg = await message_obj.reply_text(TEXTS[lang]['sending'])
 
+    audio_url = None
+    async with aiohttp.ClientSession() as session:
+        for instance in INVIDIOUS_INSTANCES:
+            try:
+                url = f"{instance}/api/v1/videos/{video_id}"
+                async with session.get(url, timeout=5) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        adaptive = data.get('adaptiveFormats', [])
+                        audio_streams = [f for f in adaptive if 'audio' in f.get('type', '')]
+                        if audio_streams:
+                            # Eng sifatli audio havolasini olish
+                            audio_url = audio_streams[-1].get('url')
+                            break
+            except Exception:
+                continue
+
+    if not audio_url:
+        await status_msg.edit_text(TEXTS[lang]['not_found'])
+        return
+
     try:
-        with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-            track_title = info.get('title', fallback_title)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(audio_url) as resp:
+                if resp.status == 200:
+                    audio_data = await resp.read()
+                    sent_msg = await message_obj.reply_audio(
+                        audio=audio_data,
+                        filename=f"{title}.mp3",
+                        title=title,
+                        caption=f"🎧 **{title}**",
+                        parse_mode="Markdown"
+                    )
 
-        if filename and os.path.exists(filename):
-            with open(filename, 'rb') as audio_file:
-                sent_msg = await message_obj.reply_audio(
-                    audio=audio_file,
-                    title=track_title,
-                    caption=f"🎧 **{track_title}**",
-                    parse_mode="Markdown"
-                )
-
-                audio_cache[url] = {
-                    'file_id': sent_msg.audio.file_id,
-                    'title': track_title
-                }
-                save_data(CACHE_FILE, audio_cache)
-
-            await status_msg.delete()
-            if os.path.exists(filename):
-                os.remove(filename)
-        else:
-            await status_msg.edit_text(TEXTS[lang]['not_found'])
-
+                    audio_cache[video_id] = {
+                        'file_id': sent_msg.audio.file_id,
+                        'title': title
+                    }
+                    save_data(CACHE_FILE, audio_cache)
+                    await status_msg.delete()
+                else:
+                    await status_msg.edit_text(TEXTS[lang]['not_found'])
     except Exception as e:
-        print(f"Download Error: {e}")
+        print(f"Download Exception: {e}")
         await status_msg.edit_text(TEXTS[lang]['not_found'])
 
 # ----------------- ADMIN PANEL -----------------
