@@ -3,7 +3,7 @@ import json
 import threading
 import math
 from http.server import HTTPServer, BaseHTTPRequestHandler
-import aiohttp
+from deezy import Deezer
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
@@ -23,6 +23,7 @@ CACHE_FILE = "audio_cache.json"
 AUTH_STATE, BROADCAST_STATE, BAN_STATE, UNBAN_STATE = range(4)
 
 os.makedirs("downloads", exist_ok=True)
+dz = Deezer()
 
 class DummyServer(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -82,13 +83,6 @@ TEXTS = {
         'blocked_msg': "🚫 You are blocked!"
     }
 }
-
-INVIDIOUS_INSTANCES = [
-    "https://inv.tux.im",
-    "https://invidious.nerdvpn.de",
-    "https://invidious.drgns.space",
-    "https://yt.drgnz.club"
-]
 
 def get_user_lang(user_id):
     return user_langs.get(str(user_id), 'uz')
@@ -162,70 +156,55 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await search_tracks(update, context, text)
 
-# ----------------- INVIDIOUS API BILAN ISHLASH -----------------
+# ----------------- QIDIRUV VA TO'LIQ MP3 YUKLASH -----------------
 
 async def search_tracks(update: Update, context: ContextTypes.DEFAULT_TYPE, query_text: str):
     user_id = update.effective_user.id
     lang = get_user_lang(user_id)
     status_msg = await update.message.reply_text(TEXTS[lang]['search'].format(query_text), parse_mode="Markdown")
 
-    entries = []
-    async with aiohttp.ClientSession() as session:
-        for instance in INVIDIOUS_INSTANCES:
-            try:
-                url = f"{instance}/api/v1/search?q={query_text}&type=video"
-                async with session.get(url, timeout=5) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if data:
-                            entries = data
-                            break
-            except Exception:
-                continue
+    try:
+        results = dz.search_track(query_text, limit=10)
+        if not results:
+            await status_msg.edit_text(TEXTS[lang]['not_found'])
+            return
 
-    if not entries:
-        await status_msg.edit_text(TEXTS[lang]['not_found'])
-        return
+        results_text = f"🔍 **{query_text}**\n\n"
+        keyboard = []
+        row = []
 
-    results_text = f"🔍 **{query_text}**\n\n"
-    keyboard = []
-    row = []
+        context.user_data['search_results'] = {}
 
-    context.user_data['search_results'] = {}
+        for idx, track in enumerate(results, start=1):
+            title = f"{track.artist.name} - {track.title}"
+            duration = format_duration(track.duration)
+            track_id = str(track.id)
 
-    count = 1
-    for item in entries:
-        if count > 10: break
-        title = item.get('title', 'Noma\'lum qo\'shiq')
-        duration = format_duration(item.get('lengthSeconds', 0))
-        video_id = item.get('videoId')
+            results_text += f"{idx}. **{title}** `{duration}`\n"
+            context.user_data['search_results'][str(idx)] = {
+                'id': track_id,
+                'title': title
+            }
 
-        if not video_id:
-            continue
-
-        results_text += f"{count}. **{title}** `{duration}`\n"
-        context.user_data['search_results'][str(count)] = {
-            'id': video_id,
-            'title': title
-        }
-
-        row.append(InlineKeyboardButton(str(count), callback_data=f"yt_{count}"))
-        if len(row) == 5:
+            row.append(InlineKeyboardButton(str(idx), callback_data=f"dz_{idx}"))
+            if len(row) == 5:
+                keyboard.append(row)
+                row = []
+        if row:
             keyboard.append(row)
-            row = []
-        count += 1
 
-    if row:
-        keyboard.append(row)
+        keyboard.append([InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_search")])
 
-    keyboard.append([InlineKeyboardButton("❌ Bekor qilish", callback_data="cancel_search")])
+        await status_msg.edit_text(
+            results_text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown",
+            disable_web_page_preview=True
+        )
 
-    await status_msg.edit_text(
-        results_text,
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown",
-        disable_web_page_preview=True
-    )
+    except Exception as e:
+        print(f"Search Error: {e}")
+        await status_msg.edit_text(TEXTS[lang]['not_found'])
 
 async def track_select_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -235,7 +214,7 @@ async def track_select_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await query.message.delete()
         return
 
-    idx = query.data.replace("yt_", "")
+    idx = query.data.replace("dz_", "")
     item = context.user_data.get('search_results', {}).get(idx)
 
     if not item:
@@ -244,66 +223,52 @@ async def track_select_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     await download_and_send(query.message, item['id'], item['title'], query.from_user.id)
 
-async def download_and_send(message_obj, video_id, title, user_id):
+async def download_and_send(message_obj, track_id, title, user_id):
     lang = get_user_lang(user_id)
 
-    if video_id in audio_cache:
+    if track_id in audio_cache:
         try:
             await message_obj.reply_audio(
-                audio=audio_cache[video_id]['file_id'],
-                caption=f"🎧 **{audio_cache[video_id]['title']}**",
+                audio=audio_cache[track_id]['file_id'],
+                caption=f"🎧 **{audio_cache[track_id]['title']}**",
                 parse_mode="Markdown"
             )
             return
         except Exception:
-            del audio_cache[video_id]
+            del audio_cache[track_id]
 
     status_msg = await message_obj.reply_text(TEXTS[lang]['sending'])
 
-    audio_url = None
-    async with aiohttp.ClientSession() as session:
-        for instance in INVIDIOUS_INSTANCES:
-            try:
-                url = f"{instance}/api/v1/videos/{video_id}"
-                async with session.get(url, timeout=5) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        adaptive = data.get('adaptiveFormats', [])
-                        audio_streams = [f for f in adaptive if 'audio' in f.get('type', '')]
-                        if audio_streams:
-                            # Eng sifatli audio havolasini olish
-                            audio_url = audio_streams[-1].get('url')
-                            break
-            except Exception:
-                continue
-
-    if not audio_url:
-        await status_msg.edit_text(TEXTS[lang]['not_found'])
-        return
-
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(audio_url) as resp:
-                if resp.status == 200:
-                    audio_data = await resp.read()
-                    sent_msg = await message_obj.reply_audio(
-                        audio=audio_data,
-                        filename=f"{title}.mp3",
-                        title=title,
-                        caption=f"🎧 **{title}**",
-                        parse_mode="Markdown"
-                    )
+        track_obj = dz.get_track(int(track_id))
+        output_path = f"downloads/{track_id}.mp3"
+        
+        # To'liq MP3 faylini saqlash
+        track_obj.download(output_path, quality="MP3_128")
 
-                    audio_cache[video_id] = {
-                        'file_id': sent_msg.audio.file_id,
-                        'title': title
-                    }
-                    save_data(CACHE_FILE, audio_cache)
-                    await status_msg.delete()
-                else:
-                    await status_msg.edit_text(TEXTS[lang]['not_found'])
+        if os.path.exists(output_path):
+            with open(output_path, 'rb') as audio_file:
+                sent_msg = await message_obj.reply_audio(
+                    audio=audio_file,
+                    title=title,
+                    caption=f"🎧 **{title}**",
+                    parse_mode="Markdown"
+                )
+
+                audio_cache[track_id] = {
+                    'file_id': sent_msg.audio.file_id,
+                    'title': title
+                }
+                save_data(CACHE_FILE, audio_cache)
+
+            await status_msg.delete()
+            if os.path.exists(output_path):
+                os.remove(output_path)
+        else:
+            await status_msg.edit_text(TEXTS[lang]['not_found'])
+
     except Exception as e:
-        print(f"Download Exception: {e}")
+        print(f"Download Error: {e}")
         await status_msg.edit_text(TEXTS[lang]['not_found'])
 
 # ----------------- ADMIN PANEL -----------------
@@ -447,7 +412,7 @@ def main():
     app.add_handler(admin_dialog)
     
     app.add_handler(CallbackQueryHandler(set_language_callback, pattern="^set_lang_"))
-    app.add_handler(CallbackQueryHandler(track_select_callback, pattern="^(yt_|cancel_search)"))
+    app.add_handler(CallbackQueryHandler(track_select_callback, pattern="^(dz_|cancel_search)"))
     app.add_handler(CallbackQueryHandler(admin_callback))
     
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
