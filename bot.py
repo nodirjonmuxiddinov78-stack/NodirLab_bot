@@ -15,6 +15,7 @@ ADMIN_ID = 8294462170  # <--- O'ZINGIZNING TELEGRAM ID RAQAMINGIZ
 SECRET_ADMIN_COMMAND = "secretadmin"  # <--- ADMIN BUYRUG'I (Masalan: /secret_control)
 ADMIN_PASSWORD = "20122607"  # <--- ADMIN PANEL PAROLI
 
+
 USERS_FILE = "users.json"
 LANGS_FILE = "user_langs.json"
 BLOCKED_FILE = "blocked_users.json"
@@ -51,6 +52,11 @@ user_langs = load_data(LANGS_FILE, {})
 blocked_users = set(load_data(BLOCKED_FILE, []))
 audio_cache = load_data(CACHE_FILE, {})
 
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept-Language': 'en-US,en;q=0.9'
+}
+
 TEXTS = {
     'uz': {
         'start': "Assalomu alaykum! Qo'shiq nomini yoki ijrochini yozing:",
@@ -68,7 +74,7 @@ TEXTS = {
         'not_found': "❌ Песня не найдена.",
         'btn_lang': "🌐 Сменить язык",
         'lang_changed': "✅ Язык изменен!",
-        'blocked_msg': "🚫 Вы заблокированы!"
+        'blocked_msg': "Вы заблокированы!"
     },
     'en': {
         'start': "Hello! Send the music title or artist name:",
@@ -154,7 +160,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await search_tracks(update, context, text)
 
-# ----------------- RASMIY VA BLOKLANMAYDIGAN OCHIQ API -----------------
+# ----------------- TO'G'RIDAN-TO'G'RI OCHIQ API SEARCH -----------------
 
 async def search_tracks(update: Update, context: ContextTypes.DEFAULT_TYPE, query_text: str):
     user_id = update.effective_user.id
@@ -162,39 +168,43 @@ async def search_tracks(update: Update, context: ContextTypes.DEFAULT_TYPE, quer
     status_msg = await update.message.reply_text(TEXTS[lang]['search'].format(query_text), parse_mode="Markdown")
 
     tracks = []
-    async with aiohttp.ClientSession() as session:
-        # 1. iTunes API orqali qidiruv
+    async with aiohttp.ClientSession(headers=HEADERS) as session:
+        # Saavn Open API orqali to'liq MP3 oqimini qidirish
         try:
-            itunes_url = f"https://itunes.apple.com/search?term={query_text}&entity=song&limit=10"
-            async with session.get(itunes_url, timeout=5) as resp:
+            saavn_url = f"https://saavn.dev/api/search/songs?query={query_text}&limit=10"
+            async with session.get(saavn_url, timeout=8) as resp:
                 if resp.status == 200:
-                    data = await resp.json()
-                    for item in data.get('results', []):
-                        tracks.append({
-                            'id': str(item.get('trackId')),
-                            'title': f"{item.get('artistName')} - {item.get('trackName')}",
-                            'duration': format_duration(item.get('trackTimeMillis', 0)),
-                            'url': item.get('previewUrl')
-                        })
-        except Exception:
-            pass
+                    res_data = await resp.json()
+                    results = res_data.get('data', {}).get('results', [])
+                    for item in results:
+                        download_urls = item.get('downloadUrl', [])
+                        mp3_url = download_urls[-1]['url'] if download_urls else None
+                        if mp3_url:
+                            tracks.append({
+                                'id': str(item.get('id')),
+                                'title': f"{item.get('name')} - {item.get('primaryArtists')}",
+                                'duration': format_duration(int(item.get('duration', 0)) * 1000),
+                                'url': mp3_url
+                            })
+        except Exception as e:
+            print(f"Saavn Error: {e}")
 
-        # 2. Zaxira: Jamendo API
+        # Zaxira: iTunes API
         if not tracks:
             try:
-                jamendo_url = f"https://api.jamendo.com/v3.0/tracks/?client_id=56d30262&format=json&limit=10&search={query_text}"
-                async with session.get(jamendo_url, timeout=5) as resp:
+                itunes_url = f"https://itunes.apple.com/search?term={query_text}&entity=song&limit=10"
+                async with session.get(itunes_url, timeout=8) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         for item in data.get('results', []):
                             tracks.append({
-                                'id': str(item.get('id')),
-                                'title': f"{item.get('artist_name')} - {item.get('name')}",
-                                'duration': format_duration(item.get('duration', 0) * 1000),
-                                'url': item.get('audio')
+                                'id': str(item.get('trackId')),
+                                'title': f"{item.get('artistName')} - {item.get('trackName')}",
+                                'duration': format_duration(item.get('trackTimeMillis', 0)),
+                                'url': item.get('previewUrl')
                             })
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"iTunes Error: {e}")
 
     if not tracks:
         await status_msg.edit_text(TEXTS[lang]['not_found'])
@@ -263,8 +273,8 @@ async def download_and_send(message_obj, item, user_id):
     status_msg = await message_obj.reply_text(TEXTS[lang]['sending'])
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(download_url, timeout=15) as resp:
+        async with aiohttp.ClientSession(headers=HEADERS) as session:
+            async with session.get(download_url, timeout=20) as resp:
                 if resp.status == 200:
                     audio_data = await resp.read()
                     sent_msg = await message_obj.reply_audio(
